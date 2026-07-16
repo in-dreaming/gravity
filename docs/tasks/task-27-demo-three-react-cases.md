@@ -54,10 +54,10 @@ Task 26。
 - rollback最终hash等于权威路径；
 - renderer interpolation不改变World hash；
 - case切换无WASM/Three资源泄漏；
-- headless行为测试与关键截图通过；
+- headless行为/hash/DOM测试精确通过；截图只在固定浏览器与软件渲染配置使用
+  感知阈值，不将跨GPU像素完全一致作为物理或发布golden；
 - `zig build demo-run`是唯一启动入口。
 
 ## 完成判定
 
 Demo完整展示系统能力且可诊断。静态动画、JS物理、只做少量case或无自动验证不算完成。
-

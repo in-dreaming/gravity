@@ -27,14 +27,15 @@
 | 20 | [完整 World Pipeline](task-20-world-pipeline.md) | 08,12-19 |
 | 21 | [Snapshot、Rollback、Replay 与 Diff](task-21-snapshot-rollback-replay-diff.md) | 04,12,16,20 |
 | 22 | [C ABI 与多平台产物](task-22-c-abi-packaging.md) | 05,17,20,21 |
-| 23 | [确定性 Job System](task-23-deterministic-job-system.md) | 20,21,22 |
+| 22A | [Spindle Executor 接入与已完成管线重构](task-22a-spindle-executor-adoption.md) | 20,21,22 |
+| 23 | [确定性 Job System](task-23-deterministic-job-system.md) | 22A |
 | 24 | [性能优化与基准](task-24-optimization-benchmarks.md) | 20,21,23 |
 | 25 | [Fuzz、安全与鲁棒性](task-25-fuzz-security-hardening.md) | 05,21,23 |
-| 26 | [Demo WASM、TypeScript 与统一构建](task-26-demo-wasm-typescript-build.md) | 22,23 |
+| 26 | [Demo WASM、TypeScript 与统一构建](task-26-demo-wasm-typescript-build.md) | 22 |
 | 27 | [Three.js、React 与经典 Cases](task-27-demo-three-react-cases.md) | 26 |
-| 28 | [Product-Ready 全面验收](task-28-product-qualification.md) | 22-25,27 |
-| 29 | [可选调研：布料](task-29-research-cloth.md) | 无 |
-| 30 | [可选调研：软体](task-30-research-soft-body.md) | 无 |
-| 31 | [可选调研：可变形 Mesh 与断裂](task-31-research-deformable-mesh-fracture.md) | 无 |
+| 28 | [Product-Ready 全面验收](task-28-product-qualification.md) | 22,22A,23,24,25,27 |
+| 29 | [可选调研：布料](task-29-research-cloth.md) | 22A contract |
+| 30 | [可选调研：软体](task-30-research-soft-body.md) | 22A contract |
+| 31 | [可选调研：可变形 Mesh 与断裂](task-31-research-deformable-mesh-fracture.md) | 22A contract |
 
 Tasks 00～28 是不可删减的 product-ready 主链。Tasks 29～31 是独立可选调研任务，只输出研究和架构建议，不以空实现污染主链。

@@ -6,7 +6,9 @@
 
 ## 依赖
 
-只依赖 `setup.md`。必须遵守当前 product-ready 主链边界；软体研究失败不得影响刚体发布。
+依赖 `setup.md` 与 Task 22A 冻结的 Gravity `jobs.Dispatcher` contract，但不
+阻塞刚体主链。必须遵守当前product-ready边界；不得创建第二套executor、
+scheduler或并行publication模型，软体研究失败不得影响刚体发布。
 
 ## 交付物
 
@@ -16,7 +18,8 @@
 - soft–rigid、soft–mesh、soft–soft 碰撞与耦合设计；
 - Q32.32 范围/精度预算、反转单元和退化单元处理规则；
 - 确定性并行、snapshot/rollback、事件/查询、C ABI 与资产版本影响；
-- 不少于 10 个后续实现任务草案及验收门禁；
+- dependency-closed后续实现任务DAG及验收门禁；任务数量由数据所有权、算法
+  phase和验证边界决定，不为满足配额机械拆分；
 - 至少 5 个原始论文或官方技术资料的证据表。
 
 ## 详细实现架构
@@ -27,7 +30,11 @@
 
 碰撞必须定义表面 primitive 到现有 shape/BVH 的适配、厚度、稳定 feature、penetration correction 和双向冲量/力反馈。soft–soft 自碰撞必须给出候选结构和邻接过滤，即使建议延后实现也要明确依赖和产品边界。
 
-并行必须分析 element/constraint coloring、固定块和归并次序；快照必须说明哪些预计算属于 asset，哪些历史量影响未来，哪些 BVH/颜色/island 可重建。固定点分析必须覆盖 deformation gradient、determinant、polar decomposition 或其替代、compliance、应力和冲量的位宽。
+并行必须分析element/constraint coloring、固定块和归并次序，并映射到Gravity
+逻辑job-owned staging与batch commit；快照必须说明哪些预计算属于asset，哪些
+历史量影响未来，哪些BVH/颜色/island可重建。数值分析必须验证Q32.32是否足以
+覆盖deformation gradient、determinant、polar decomposition或替代、compliance、
+应力和冲量；允许推荐隔离的确定性定点/尺度域，不得默认复用同一标量就正确。
 
 ## 实施步骤
 

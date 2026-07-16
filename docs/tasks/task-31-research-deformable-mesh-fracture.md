@@ -6,7 +6,9 @@
 
 ## 依赖
 
-只依赖 `setup.md`。可引用 Tasks 29/30 的最终调研结论，但不得把它们视为前置完成条件；所有引用内容必须在本文概括到足以独立决策。
+依赖 `setup.md` 与 Task 22A 冻结的 Gravity `jobs.Dispatcher` contract，但不
+阻塞刚体主链。可引用Tasks 29/30结论但不把它们视为前置；所有引用内容必须
+概括到足以独立决策。禁止为mutation/BVH rebuild创建第二套executor或scheduler。
 
 ## 交付物
 

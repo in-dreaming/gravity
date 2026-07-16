@@ -19,6 +19,9 @@ pub const state = struct {
     pub const codec = @import("state/codec.zig");
     pub const hash = @import("state/hash.zig");
     pub const snapshot = @import("state/snapshot.zig");
+    pub const rollback = @import("state/rollback.zig");
+    pub const replay = @import("state/replay.zig");
+    pub const diff = @import("state/diff.zig");
 };
 
 pub const geometry = struct {
@@ -50,6 +53,9 @@ pub const dynamics = struct {
     pub const ccd = @import("dynamics/ccd.zig");
     pub const pipeline = @import("dynamics/pipeline.zig");
 };
+
+/// Stable C ABI implementation. Core modules never import this upper layer.
+pub const abi = @import("abi/root.zig");
 
 pub const abi_version = version.abi_version;
 pub const protocol_version = version.protocol_version;

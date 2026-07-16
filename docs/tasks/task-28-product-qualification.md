@@ -6,7 +6,7 @@
 
 ## 依赖
 
-Tasks 22、23、24、25、27完成；并审计Tasks 00～27全部记录。
+Tasks 22、22A、23、24、25、27完成；并审计Tasks 00～27全部记录。
 
 ## 交付物
 
@@ -20,7 +20,10 @@ Tasks 22、23、24、25、27完成；并审计Tasks 00～27全部记录。
 
 ## 详细实现架构
 
-每平台运行同replay并输出逐Tick section hash，汇总仅字节比较。Golden只能通过protocol变更评审更新。两个干净环境构建，剥离明确非语义metadata后artifact逐字节相同。
+每平台运行同replay并输出逐Tick section hash，汇总仅字节比较。Golden只能
+通过protocol变更评审更新。每个target分别在两个干净环境构建，剥离明确
+非语义metadata后同target artifact逐字节相同；不同OS/object format之间不要求
+artifact字节相同，只比较canonical模拟输出。
 
 支持矩阵必须覆盖全部离散shape pair，包括dynamic mesh–mesh；CCD按冻结边界；所有关节；2D preset；随机rollback；worker切换。WASM只要求single worker但hash等于native。
 

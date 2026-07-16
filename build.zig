@@ -18,22 +18,24 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
     const metadata = addBuildMetadata(b);
-    const core_module = addCoreModule(b, target, optimize, metadata);
-
     const static_library = b.addLibrary(.{
-        .name = "gravity",
-        .root_module = core_module,
+        .name = "gravity_static",
+        .root_module = addAbiModule(b, target, optimize, metadata),
         .linkage = .static,
     });
+    static_library.bundle_compiler_rt = true;
     b.installArtifact(static_library);
+    static_library.installHeader(b.path("include/gravity.h"), "gravity.h");
 
+    var shared_library: ?*std.Build.Step.Compile = null;
     if (target.result.cpu.arch != .wasm32) {
-        const shared_library = b.addLibrary(.{
+        const shared_artifact = b.addLibrary(.{
             .name = "gravity",
-            .root_module = core_module,
+            .root_module = addAbiModule(b, target, optimize, metadata),
             .linkage = .dynamic,
         });
-        b.installArtifact(shared_library);
+        b.installArtifact(shared_artifact);
+        shared_library = shared_artifact;
     }
 
     const wasm_target = b.resolveTargetQuery(.{
@@ -41,19 +43,35 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
         .abi = .none,
     });
-    const wasm_module = addCoreModule(b, wasm_target, .ReleaseSmall, metadata);
-    const wasm_library = b.addLibrary(.{
-        .name = "gravity_foundation_wasm",
-        .root_module = wasm_module,
-        .linkage = .static,
-    });
+    const wasm_module = addAbiModule(b, wasm_target, .ReleaseSmall, metadata);
+    const wasm_library = b.addExecutable(.{ .name = "gravity", .root_module = wasm_module });
+    wasm_library.entry = .disabled;
+    wasm_library.rdynamic = true;
     const install_wasm = b.addInstallArtifact(wasm_library, .{});
+    b.getInstallStep().dependOn(&install_wasm.step);
 
     const wasi_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
         .os_tag = .wasi,
         .abi = .none,
     });
+
+    const abi_artifacts = b.step("abi-artifacts", "Build Task 22 Windows, Linux, macOS, and WASM artifacts");
+    const artifact_targets = .{
+        .{ "windows-x86_64", std.Target.Query{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu } },
+        .{ "linux-x86_64", std.Target.Query{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl } },
+        .{ "macos-x86_64", std.Target.Query{ .cpu_arch = .x86_64, .os_tag = .macos } },
+        .{ "macos-aarch64", std.Target.Query{ .cpu_arch = .aarch64, .os_tag = .macos } },
+    };
+    inline for (artifact_targets) |entry| {
+        const artifact_target = b.resolveTargetQuery(entry[1]);
+        const artifact_static = b.addLibrary(.{ .name = "gravity_static", .root_module = addAbiModule(b, artifact_target, .ReleaseSafe, metadata), .linkage = .static });
+        artifact_static.bundle_compiler_rt = true;
+        const artifact_shared = b.addLibrary(.{ .name = "gravity", .root_module = addAbiModule(b, artifact_target, .ReleaseSafe, metadata), .linkage = .dynamic });
+        abi_artifacts.dependOn(&b.addInstallArtifact(artifact_static, .{ .dest_dir = .{ .override = .{ .custom = b.fmt("abi/{s}/lib", .{entry[0]}) } } }).step);
+        abi_artifacts.dependOn(&b.addInstallArtifact(artifact_shared, .{ .dest_dir = .{ .override = .{ .custom = b.fmt("abi/{s}/lib", .{entry[0]}) } } }).step);
+    }
+    abi_artifacts.dependOn(&install_wasm.step);
     const arm_linux_target = b.resolveTargetQuery(.{
         .cpu_arch = .aarch64,
         .os_tag = .linux,
@@ -68,6 +86,8 @@ pub fn build(b: *std.Build) void {
     fmt_step.dependOn(&fmt.step);
 
     const test_step = b.step("test", "Run Debug unit tests");
+    test_step.dependOn(&addSpindleTest(b, "spindle-integration-debug", target, .Debug, addSpindleModule(b, target, .Debug)).step);
+    test_step.dependOn(&addJobsTest(b, "jobs-dispatcher-debug", target, .Debug, metadata, addSpindleModule(b, target, .Debug)).step);
     test_step.dependOn(&addZigTest(b, "unit-foundation-debug", target, .Debug, metadata, "tests/unit/foundation_test.zig").step);
     test_step.dependOn(&addZigTest(b, "unit-fp-debug", target, .Debug, metadata, "tests/unit/fp_test.zig").step);
     test_step.dependOn(&addZigTest(b, "golden-fp-debug", target, .Debug, metadata, "tests/golden/fp_golden.zig").step);
@@ -106,7 +126,11 @@ pub fn build(b: *std.Build) void {
 
     const all_modes = b.step("test-all-modes", "Run unit tests in all supported optimization modes");
     all_modes.dependOn(core_all_modes);
+    const spindle_all_modes = b.step("spindle-check-all-modes", "Validate Spindle integration in Debug, ReleaseSafe, and ReleaseFast");
+    all_modes.dependOn(spindle_all_modes);
     inline for ([_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe, .ReleaseFast }) |mode| {
+        spindle_all_modes.dependOn(&addSpindleTest(b, b.fmt("spindle-integration-{s}", .{@tagName(mode)}), target, mode, addSpindleModule(b, target, mode)).step);
+        spindle_all_modes.dependOn(&addJobsTest(b, b.fmt("jobs-dispatcher-{s}", .{@tagName(mode)}), target, mode, metadata, addSpindleModule(b, target, mode)).step);
         all_modes.dependOn(&addZigTest(b, b.fmt("unit-foundation-{s}", .{@tagName(mode)}), target, mode, metadata, "tests/unit/foundation_test.zig").step);
         all_modes.dependOn(&addZigTest(b, b.fmt("unit-fp-{s}", .{@tagName(mode)}), target, mode, metadata, "tests/unit/fp_test.zig").step);
         all_modes.dependOn(&addZigTest(b, b.fmt("golden-fp-{s}", .{@tagName(mode)}), target, mode, metadata, "tests/golden/fp_golden.zig").step);
@@ -168,6 +192,12 @@ pub fn build(b: *std.Build) void {
     pipeline_long_run_test.setEnvironmentVariable("GRAVITY_PIPELINE_LONG_RUN", "1");
     pipeline_long_run.dependOn(&pipeline_long_run_test.step);
 
+    const snapshot_all_modes = b.step("test-snapshot-all-modes", "Run Task 21 snapshot, rollback, replay, and diff tests in Debug, ReleaseSafe, and ReleaseFast");
+    inline for ([_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe, .ReleaseFast }) |mode| {
+        snapshot_all_modes.dependOn(&addZigTest(b, b.fmt("unit-snapshot-task21-{s}", .{@tagName(mode)}), target, mode, metadata, "tests/unit/codec_test.zig").step);
+        snapshot_all_modes.dependOn(&addZigTest(b, b.fmt("replay-cli-task21-{s}", .{@tagName(mode)}), target, mode, metadata, "tools/replay.zig").step);
+    }
+
     const determinism = b.step("determinism", "Run deterministic foundation checks");
     determinism.dependOn(&addZigTest(b, "determinism", target, optimize, metadata, "tests/determinism/metadata_test.zig").step);
 
@@ -183,6 +213,31 @@ pub fn build(b: *std.Build) void {
 
     const abi_test = b.step("abi-test", "Compile and run the C header compatibility test");
     abi_test.dependOn(&addAbiTest(b, target, optimize).step);
+    abi_test.dependOn(&addZigTest(b, "abi-runtime", target, optimize, metadata, "tests/abi/abi_test.zig").step);
+    abi_test.dependOn(&addAbiConsumer(b, "gravity-c11-consumer", "tests/abi/consumer.c", target, optimize, static_library).step);
+    abi_test.dependOn(&addAbiConsumer(b, "gravity-cpp17-consumer", "tests/abi/consumer.cpp", target, optimize, static_library).step);
+
+    const abi_all_modes = b.step("test-abi-all-modes", "Run Task 22 ABI tests in Debug, ReleaseSafe, and ReleaseFast");
+    inline for ([_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe, .ReleaseFast }) |mode| {
+        abi_all_modes.dependOn(&addZigTest(b, b.fmt("abi-runtime-{s}", .{@tagName(mode)}), target, mode, metadata, "tests/abi/abi_test.zig").step);
+    }
+
+    const wasm_abi_smoke = b.step("abi-wasm-smoke", "Run the installed-style WASM C ABI consumer");
+    const node_abi = b.addSystemCommand(&.{ "node", "tests/abi/wasm_consumer.mjs" });
+    node_abi.addArtifactArg(wasm_library);
+    wasm_abi_smoke.dependOn(&node_abi.step);
+
+    if (target.result.os.tag == .windows) {
+        const csharp_smoke = b.step("abi-csharp-smoke", "Run the C# P/Invoke consumer against the shared library");
+        const dotnet = b.addSystemCommand(&.{ "dotnet", "run", "--project", "tests/abi/csharp/GravityAbiSmoke.csproj", "--" });
+        dotnet.addArtifactArg(shared_library.?);
+        csharp_smoke.dependOn(&dotnet.step);
+        abi_test.dependOn(&dotnet.step);
+        const symbols = b.addSystemCommand(&.{ "pwsh", "-NoProfile", "-File", "tests/abi/check-symbols.ps1" });
+        symbols.addArtifactArg(shared_library.?);
+        symbols.addFileArg(b.path("tests/abi/abi-baseline-v1.json"));
+        abi_test.dependOn(&symbols.step);
+    }
 
     const benchmark = b.step("benchmark", "Run the foundation metadata benchmark");
     benchmark.dependOn(&addToolRun(b, "benchmark", target, optimize, metadata).step);
@@ -204,6 +259,10 @@ pub fn build(b: *std.Build) void {
     const wasm_codec_run = b.addSystemCommand(&.{ "wasmtime", "run" });
     wasm_codec_run.addArtifactArg(wasm_codec);
     wasm_validate.dependOn(&wasm_codec_run.step);
+    const wasm_replay_cli = addZigTestArtifact(b, "replay-cli-task21-wasi", wasi_target, .ReleaseSafe, metadata, "tools/replay.zig");
+    const wasm_replay_cli_run = b.addSystemCommand(&.{ "wasmtime", "run" });
+    wasm_replay_cli_run.addArtifactArg(wasm_replay_cli);
+    wasm_validate.dependOn(&wasm_replay_cli_run.step);
     const wasm_benchmark = addTool(b, "benchmark", wasi_target, .ReleaseSafe, metadata);
     const wasm_benchmark_run = b.addSystemCommand(&.{ "wasmtime", "run" });
     wasm_benchmark_run.addArtifactArg(wasm_benchmark);
@@ -334,6 +393,9 @@ pub fn build(b: *std.Build) void {
         tools_step.dependOn(&b.addInstallArtifact(tool, .{}).step);
     }
 
+    const spindle_check = b.step("spindle-check", "Validate the pinned minimal Spindle executor profile");
+    spindle_check.dependOn(&addSpindleTest(b, "spindle-integration", target, optimize, addSpindleModule(b, target, optimize)).step);
+
     const demo = b.step("demo", "Build the core WASM artifact and verify frontend prerequisites");
     const node_check = b.addSystemCommand(&.{ "node", "--version" });
     node_check.step.dependOn(&install_wasm.step);
@@ -369,7 +431,90 @@ fn addCoreModule(
         .link_libcpp = false,
     });
     module.addImport("build_options", metadata.createModule());
+    const jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/dispatcher.zig"), .target = target, .optimize = optimize });
+    const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
+    host_jobs.addImport("gravity_jobs", jobs);
+    module.addImport("gravity_jobs", jobs);
+    module.addImport("gravity_host_jobs", host_jobs);
     return module;
+}
+
+fn addAbiModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    metadata: *std.Build.Step.Options,
+) *std.Build.Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/c_abi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = false,
+        .link_libcpp = false,
+    });
+    module.addImport("build_options", metadata.createModule());
+    const jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/dispatcher.zig"), .target = target, .optimize = optimize });
+    const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
+    host_jobs.addImport("gravity_jobs", jobs);
+    module.addImport("gravity_jobs", jobs);
+    module.addImport("gravity_host_jobs", host_jobs);
+    return module;
+}
+
+fn addSpindleModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("third_party/spindle/src/executor.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    return module;
+}
+
+fn addSpindleTest(
+    b: *std.Build,
+    name: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    spindle: *std.Build.Module,
+) *std.Build.Step.Run {
+    const module = b.createModule(.{
+        .root_source_file = b.path("tests/unit/spindle_integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addImport("spindle", spindle);
+    return b.addRunArtifact(b.addTest(.{ .name = name, .root_module = module }));
+}
+
+fn addJobsTest(
+    b: *std.Build,
+    name: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    metadata: *std.Build.Step.Options,
+    spindle: *std.Build.Module,
+) *std.Build.Step.Run {
+    const jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/dispatcher.zig"), .target = target, .optimize = optimize });
+    const spindle_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/spindle_dispatcher.zig"), .target = target, .optimize = optimize });
+    spindle_jobs.addImport("gravity_jobs", jobs);
+    spindle_jobs.addImport("spindle_executor", spindle);
+    const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
+    host_jobs.addImport("gravity_jobs", jobs);
+    const gravity = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+    gravity.addImport("build_options", metadata.createModule());
+    gravity.addImport("gravity_jobs", jobs);
+    gravity.addImport("gravity_host_jobs", host_jobs);
+    const module = b.createModule(.{ .root_source_file = b.path("tests/unit/jobs_dispatcher_test.zig"), .target = target, .optimize = optimize });
+    module.addImport("gravity_jobs", jobs);
+    module.addImport("gravity_spindle_jobs", spindle_jobs);
+    module.addImport("gravity_host_jobs", host_jobs);
+    module.addImport("spindle_executor", spindle);
+    module.addImport("gravity", gravity);
+    return b.addRunArtifact(b.addTest(.{ .name = name, .root_module = module }));
 }
 
 fn addZigTest(
@@ -416,6 +561,22 @@ fn addAbiTest(
         .name = "gravity-abi-header-test",
         .root_module = module,
     });
+    return b.addRunArtifact(executable);
+}
+
+fn addAbiConsumer(
+    b: *std.Build,
+    name: []const u8,
+    source: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    library: *std.Build.Step.Compile,
+) *std.Build.Step.Run {
+    const module = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true, .link_libcpp = std.mem.endsWith(u8, source, ".cpp") });
+    module.addCSourceFile(.{ .file = b.path(source), .flags = if (std.mem.endsWith(u8, source, ".cpp")) &.{"-std=c++17"} else &.{"-std=c11"} });
+    module.addIncludePath(b.path("include"));
+    module.linkLibrary(library);
+    const executable = b.addExecutable(.{ .name = name, .root_module = module });
     return b.addRunArtifact(executable);
 }
 

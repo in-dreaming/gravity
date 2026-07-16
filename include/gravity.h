@@ -1,12 +1,208 @@
 #ifndef GRAVITY_H
 #define GRAVITY_H
 
-/* Stable C ABI declarations begin in Task 22. These version macros let C
- * consumers and the ABI test agree on the format tuple without exposing a
- * provisional physics API. */
+#include <stdint.h>
+
+#if defined(_WIN32) && defined(GRAVITY_SHARED)
+#  if defined(GRAVITY_BUILD)
+#    define GRAVITY_API __declspec(dllexport)
+#  else
+#    define GRAVITY_API __declspec(dllimport)
+#  endif
+#elif defined(__GNUC__) || defined(__clang__)
+#  define GRAVITY_API __attribute__((visibility("default")))
+#else
+#  define GRAVITY_API
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define GRAVITY_V1_ABI_VERSION 1u
 #define GRAVITY_V1_PROTOCOL_VERSION 1u
 #define GRAVITY_V1_SNAPSHOT_FORMAT_VERSION 1u
-#define GRAVITY_V1_ASSET_FORMAT_VERSION 1u
+#define GRAVITY_V1_ASSET_FORMAT_VERSION 2u
+
+typedef int64_t GravityFpRaw;
+typedef uint64_t GravityId;
+typedef uint32_t GravityResult;
+
+enum {
+    GRAVITY_OK = 0u,
+    GRAVITY_ERROR_INVALID_ARGUMENT = 1u,
+    GRAVITY_ERROR_BAD_STRUCT = 2u,
+    GRAVITY_ERROR_MISALIGNED = 3u,
+    GRAVITY_ERROR_INSUFFICIENT_MEMORY = 4u,
+    GRAVITY_ERROR_CAPACITY = 5u,
+    GRAVITY_ERROR_INVALID_ID = 6u,
+    GRAVITY_ERROR_INVALID_STATE = 7u,
+    GRAVITY_ERROR_CORRUPT_INPUT = 8u,
+    GRAVITY_ERROR_CALLBACK = 9u,
+    GRAVITY_ERROR_REENTRANT = 10u,
+    GRAVITY_ERROR_BUFFER_TOO_SMALL = 11u,
+    GRAVITY_ERROR_UNSUPPORTED = 12u,
+    GRAVITY_ERROR_INTERNAL = 13u
+};
+
+enum { GRAVITY_BODY_STATIC = 0u, GRAVITY_BODY_DYNAMIC = 1u, GRAVITY_BODY_KINEMATIC = 2u };
+enum { GRAVITY_SHAPE_SPHERE = 0u, GRAVITY_SHAPE_BOX = 1u, GRAVITY_SHAPE_CAPSULE = 2u,
+       GRAVITY_SHAPE_CONVEX_HULL = 3u, GRAVITY_SHAPE_COMPOUND = 4u,
+       GRAVITY_SHAPE_TRIANGLE_MESH = 5u, GRAVITY_SHAPE_HEIGHT_FIELD = 6u };
+enum { GRAVITY_QUERY_ANY = 0u, GRAVITY_QUERY_CLOSEST = 1u, GRAVITY_QUERY_ALL = 2u };
+enum { GRAVITY_COMMAND_FORCE = 0u, GRAVITY_COMMAND_TORQUE = 1u,
+       GRAVITY_COMMAND_IMPULSE_AT_POINT = 2u, GRAVITY_COMMAND_VELOCITY = 3u,
+       GRAVITY_COMMAND_KINEMATIC_TARGET = 4u, GRAVITY_COMMAND_DOF_LOCKS = 5u };
+
+typedef struct GravityAssetStore GravityAssetStore;
+typedef struct GravityWorld GravityWorld;
+
+typedef struct GravityVec3 { GravityFpRaw x, y, z; } GravityVec3;
+typedef struct GravityQuat { GravityFpRaw x, y, z, w; } GravityQuat;
+typedef struct GravityTransform { GravityVec3 position; GravityQuat orientation; } GravityTransform;
+typedef struct GravityHash128 { uint8_t bytes[16]; } GravityHash128;
+typedef struct GravityHash256 { uint8_t bytes[32]; } GravityHash256;
+
+typedef struct GravityBuildInfo {
+    uint32_t struct_size, reserved;
+    uint32_t abi_version, protocol_version, snapshot_format_version, asset_format_version;
+    const uint8_t *commit; uint32_t commit_length;
+    const uint8_t *zig_version; uint32_t zig_version_length;
+} GravityBuildInfo;
+
+typedef struct GravityAssetBlob { const uint8_t *data; uint64_t length; } GravityAssetBlob;
+typedef struct GravityAssetStoreDesc {
+    uint32_t struct_size, reserved;
+    const GravityAssetBlob *assets; uint32_t asset_count, reserved1;
+} GravityAssetStoreDesc;
+
+typedef struct GravityWorldDesc {
+    uint32_t struct_size, reserved;
+    uint32_t body_capacity, collider_capacity, command_capacity, contact_capacity;
+    GravityVec3 gravity;
+    GravityFpRaw linear_damping, angular_damping, max_linear_speed, max_angular_speed;
+    uint32_t substeps, tick_hz;
+    const GravityAssetStore *assets;
+} GravityWorldDesc;
+
+typedef struct GravityBodyDesc {
+    uint32_t struct_size, reserved;
+    uint32_t body_type, dof_locks;
+    GravityTransform transform;
+    GravityFpRaw inverse_mass;
+    GravityFpRaw inverse_inertia_xx, inverse_inertia_yy, inverse_inertia_zz;
+    GravityFpRaw inverse_inertia_xy, inverse_inertia_xz, inverse_inertia_yz;
+} GravityBodyDesc;
+
+typedef struct GravityBodyState {
+    uint32_t struct_size, reserved;
+    GravityId id; uint32_t body_type, dof_locks;
+    GravityTransform transform;
+    GravityVec3 linear_velocity, angular_velocity;
+} GravityBodyState;
+
+typedef struct GravityColliderDesc {
+    uint32_t struct_size, reserved;
+    GravityId body; uint32_t shape_kind, flags;
+    GravityTransform local;
+    GravityVec3 dimensions;
+    uint64_t asset_source_id;
+    GravityFpRaw friction, restitution;
+    uint32_t category, mask; int32_t group; uint32_t revision;
+} GravityColliderDesc;
+
+typedef struct GravityCommand {
+    uint32_t struct_size, reserved;
+    uint32_t type, phase_priority, issuer, sequence;
+    GravityId body;
+    GravityVec3 first, second;
+    GravityTransform transform;
+    uint32_t dof_locks, reserved1;
+} GravityCommand;
+
+typedef struct GravityEvent {
+    uint32_t struct_size, reserved;
+    uint32_t type, reserved1;
+    GravityId collider_a, collider_b;
+    uint64_t feature_a, feature_b;
+} GravityEvent;
+
+typedef struct GravityQueryFilter { uint32_t category, mask; int32_t group; uint32_t reserved; } GravityQueryFilter;
+typedef struct GravityRayQuery {
+    uint32_t struct_size, reserved;
+    GravityVec3 origin, direction; GravityFpRaw max_fraction;
+    GravityQueryFilter filter; uint32_t mode, reserved1;
+} GravityRayQuery;
+typedef struct GravityPointQuery {
+    uint32_t struct_size, reserved; GravityVec3 point;
+    GravityQueryFilter filter; uint32_t mode, reserved1;
+} GravityPointQuery;
+typedef struct GravityAabbQuery {
+    uint32_t struct_size, reserved; GravityVec3 min, max;
+    GravityQueryFilter filter; uint32_t mode, reserved1;
+} GravityAabbQuery;
+typedef struct GravityShapeQuery {
+    uint32_t struct_size, reserved; GravityColliderDesc shape; GravityTransform transform;
+    GravityQueryFilter filter; uint32_t mode, reserved1;
+} GravityShapeQuery;
+typedef struct GravityQueryHit {
+    uint32_t struct_size, reserved; GravityId collider; GravityFpRaw fraction;
+    GravityVec3 point, normal; uint32_t primitive, reserved1;
+} GravityQueryHit;
+
+typedef GravityResult (*GravityRunJobFn)(void *batch_context, uint32_t job_index);
+typedef GravityResult (*GravityDispatchBatchFn)(void *user, uint32_t job_count,
+                                                GravityRunJobFn run_job, void *batch_context);
+typedef struct GravityDispatcher {
+    uint32_t struct_size, reserved; void *user; GravityDispatchBatchFn dispatch_batch;
+} GravityDispatcher;
+
+GRAVITY_API uint32_t gravity_v1_abi_version(void);
+GRAVITY_API GravityResult gravity_v1_build_info(GravityBuildInfo *out_info);
+GRAVITY_API const char *gravity_v1_result_string(GravityResult result);
+
+GRAVITY_API GravityResult gravity_v1_asset_store_memory_required(const GravityAssetStoreDesc *desc, uint64_t *out_size, uint32_t *out_alignment);
+GRAVITY_API GravityResult gravity_v1_asset_store_init(void *memory, uint64_t memory_size, const GravityAssetStoreDesc *desc, GravityAssetStore **out_store);
+GRAVITY_API GravityResult gravity_v1_asset_store_deinit(GravityAssetStore *store);
+GRAVITY_API GravityResult gravity_v1_asset_store_hash(const GravityAssetStore *store, GravityHash256 *out_hash);
+
+GRAVITY_API GravityResult gravity_v1_world_memory_required(const GravityWorldDesc *desc, uint64_t *out_size, uint32_t *out_alignment);
+GRAVITY_API GravityResult gravity_v1_world_init(void *memory, uint64_t memory_size, const GravityWorldDesc *desc, GravityWorld **out_world);
+GRAVITY_API GravityResult gravity_v1_world_deinit(GravityWorld *world);
+GRAVITY_API GravityResult gravity_v1_world_set_dispatcher(GravityWorld *world, const GravityDispatcher *dispatcher);
+GRAVITY_API GravityResult gravity_v1_world_tick(const GravityWorld *world, uint64_t *out_tick);
+GRAVITY_API GravityResult gravity_v1_world_last_error(const GravityWorld *world, GravityResult *out_error);
+GRAVITY_API GravityResult gravity_v1_world_hash(const GravityWorld *world, GravityHash128 *out_hash);
+GRAVITY_API GravityResult gravity_v1_world_step(GravityWorld *world, const GravityCommand *commands, uint32_t command_count);
+
+GRAVITY_API GravityResult gravity_v1_world_create_body(GravityWorld *world, const GravityBodyDesc *desc, GravityId *out_id);
+GRAVITY_API GravityResult gravity_v1_world_destroy_body(GravityWorld *world, GravityId id);
+GRAVITY_API GravityResult gravity_v1_world_body_states(const GravityWorld *world, GravityBodyState *output, uint32_t capacity, uint32_t *out_required);
+GRAVITY_API GravityResult gravity_v1_world_create_collider(GravityWorld *world, const GravityColliderDesc *desc, GravityId *out_id);
+GRAVITY_API GravityResult gravity_v1_world_destroy_collider(GravityWorld *world, GravityId id);
+GRAVITY_API GravityResult gravity_v1_world_events(const GravityWorld *world, GravityEvent *output, uint32_t capacity, uint32_t *out_required);
+
+GRAVITY_API GravityResult gravity_v1_world_query_ray(GravityWorld *world, const GravityRayQuery *query, GravityQueryHit *output, uint32_t capacity, uint32_t *out_required);
+GRAVITY_API GravityResult gravity_v1_world_query_point(GravityWorld *world, const GravityPointQuery *query, GravityQueryHit *output, uint32_t capacity, uint32_t *out_required);
+GRAVITY_API GravityResult gravity_v1_world_query_aabb(GravityWorld *world, const GravityAabbQuery *query, GravityQueryHit *output, uint32_t capacity, uint32_t *out_required);
+GRAVITY_API GravityResult gravity_v1_world_query_shape(GravityWorld *world, const GravityShapeQuery *query, GravityQueryHit *output, uint32_t capacity, uint32_t *out_required);
+
+GRAVITY_API GravityResult gravity_v1_world_snapshot_size(GravityWorld *world, uint64_t *out_size);
+GRAVITY_API GravityResult gravity_v1_world_snapshot_save(GravityWorld *world, uint8_t *output, uint64_t capacity, uint64_t *out_required);
+GRAVITY_API GravityResult gravity_v1_world_snapshot_load(GravityWorld *world, const uint8_t *input, uint64_t length);
+
+#ifdef __cplusplus
+}
+#endif
+
+#if defined(__cplusplus)
+static_assert(sizeof(GravityVec3) == 24, "GravityVec3 layout");
+static_assert(sizeof(GravityQuat) == 32, "GravityQuat layout");
+static_assert(sizeof(GravityHash128) == 16, "GravityHash128 layout");
+#else
+_Static_assert(sizeof(GravityVec3) == 24, "GravityVec3 layout");
+_Static_assert(sizeof(GravityQuat) == 32, "GravityQuat layout");
+_Static_assert(sizeof(GravityHash128) == 16, "GravityHash128 layout");
+#endif
 
 #endif

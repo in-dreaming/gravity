@@ -1,0 +1,23 @@
+{
+  "abi_version": 1,
+  "asset_format_version": 2,
+  "prefix": "gravity_v1_",
+  "scalar_layout": {
+    "GravityFpRaw": { "size": 8, "signed": true },
+    "GravityId": { "size": 8, "signed": false },
+    "GravityVec3": { "size": 24, "alignment": 8 },
+    "GravityQuat": { "size": 32, "alignment": 8 },
+    "GravityHash128": { "size": 16, "alignment": 1 }
+  },
+  "reference_hash": "4336297d3f06a9c557e75aea2a839853",
+  "exports": [
+    "gravity_v1_abi_version", "gravity_v1_build_info", "gravity_v1_result_string",
+    "gravity_v1_asset_store_memory_required", "gravity_v1_asset_store_init", "gravity_v1_asset_store_deinit", "gravity_v1_asset_store_hash",
+    "gravity_v1_world_memory_required", "gravity_v1_world_init", "gravity_v1_world_deinit", "gravity_v1_world_set_dispatcher",
+    "gravity_v1_world_tick", "gravity_v1_world_last_error", "gravity_v1_world_hash", "gravity_v1_world_step",
+    "gravity_v1_world_create_body", "gravity_v1_world_destroy_body", "gravity_v1_world_body_states",
+    "gravity_v1_world_create_collider", "gravity_v1_world_destroy_collider", "gravity_v1_world_events",
+    "gravity_v1_world_query_ray", "gravity_v1_world_query_point", "gravity_v1_world_query_aabb", "gravity_v1_world_query_shape",
+    "gravity_v1_world_snapshot_size", "gravity_v1_world_snapshot_save", "gravity_v1_world_snapshot_load"
+  ]
+}

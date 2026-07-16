@@ -10,5 +10,5 @@
 
 int main(void) {
     return (GRAVITY_V1_SNAPSHOT_FORMAT_VERSION == 1 &&
-            GRAVITY_V1_ASSET_FORMAT_VERSION == 1) ? 0 : 1;
+            GRAVITY_V1_ASSET_FORMAT_VERSION == 2) ? 0 : 1;
 }

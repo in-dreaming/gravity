@@ -236,6 +236,14 @@ pub const World = struct {
         visitor.writeI64(self.settings.angular_damping.raw);
         visitor.writeI64(self.settings.max_linear_speed.raw);
         visitor.writeI64(self.settings.max_angular_speed.raw);
+        self.visitBodiesCanonical(visitor);
+        self.visitCollidersCanonical(visitor);
+    }
+    /// Visits the complete body-slot layer, including generation and all
+    /// future-relevant integration state. This is intentionally separate from
+    /// colliders so snapshot/replay diagnostics can pinpoint the changed
+    /// logical layer without changing the composite World hash contract.
+    pub fn visitBodiesCanonical(self: *const World, visitor: anytype) void {
         visitor.writeU64(self.storage.alive.len);
         for (self.storage.alive, 0..) |alive, i| {
             visitor.writeU8(@intFromBool(alive));
@@ -256,6 +264,10 @@ pub const World = struct {
             visitVec3(self.storage.target_position[i], visitor);
             visitQuat(self.storage.target_orientation[i], visitor);
         }
+    }
+    /// Visits the complete collider-slot layer, including generation and
+    /// immutable shape references. Asset bytes remain in the asset-set hash.
+    pub fn visitCollidersCanonical(self: *const World, visitor: anytype) void {
         if (self.colliders) |colliders| {
             visitor.writeU8(1);
             visitor.writeU64(colliders.alive.len);

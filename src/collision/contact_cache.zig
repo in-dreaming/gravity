@@ -131,6 +131,16 @@ pub fn visitCanonical(cache: *const Cache, visitor: anytype) void {
     }
 }
 
+/// Visits the published Tick event sequence. Events are not restored by a
+/// snapshot, but their ordered hash is exposed for replay diagnostics.
+pub fn visitEventsCanonical(events: []const Event, visitor: anytype) void {
+    visitor.writeU64(events.len);
+    for (events) |event| {
+        visitor.writeU8(@intFromEnum(event.kind));
+        visitKey(event.key, visitor);
+    }
+}
+
 /// Hashes the canonical persistent cache state with the engine state domain.
 pub fn canonicalHash(cache: *const Cache) hash.Hash256 {
     var writer = HashVisitor{};

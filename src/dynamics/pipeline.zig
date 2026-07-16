@@ -20,8 +20,9 @@ const store = @import("../assets/store.zig");
 const shapes = @import("../collision/shapes.zig");
 const hash = @import("../state/hash.zig");
 const world_mod = @import("world.zig");
+const jobs = @import("gravity_jobs");
 
-pub const Error = error{ Reentrant, Faulted, TraceCapacity, CcdFault } || world_mod.Error || config.ConfigError || sleeping.Error || constraints.Error || ccd.Error;
+pub const Error = error{ Reentrant, Faulted, TraceCapacity, CcdFault, BroadphaseFailure, ContactFailure } || jobs.Error || world_mod.Error || config.ConfigError || sleeping.Error || constraints.Error || ccd.Error;
 pub const Phase = enum(u8) { prevalidate, commit, integrate, broadphase, narrowphase, islands, solve, ccd, sleep, events, hash };
 pub const FaultCode = enum { math, world, shape, broadphase, contact, ccd };
 /// Stable, serializable cause carried by a runtime fault. It intentionally
@@ -45,7 +46,15 @@ pub const Diagnostics = struct {
         return self.phase_count[@intFromEnum(phase)];
     }
 };
-pub const Workspace = struct { commands: []world_mod.Command, trace: []Phase, trace_len: usize = 0, diagnostics: ?*Diagnostics = null };
+pub const Workspace = struct {
+    commands: []world_mod.Command,
+    trace: []Phase,
+    trace_len: usize = 0,
+    diagnostics: ?*Diagnostics = null,
+    /// Synchronous executor seam. The default serial backend is the golden
+    /// oracle; native/host adapters borrow each phase context until barrier.
+    dispatcher: jobs.Dispatcher = .{ .serial = {} },
+};
 /// Caller-owned storage for the SAP phase. `collider_views` backs proxy
 /// pointers and must remain valid until the caller has consumed `pairs`.
 pub const BroadphaseWorkspace = struct {
@@ -89,6 +98,19 @@ pub const HashInputs = struct {
     sleep: ?sleeping.Storage = null,
     ccd_enabled: ?[]const bool = null,
 };
+/// Per-layer diagnostic hashes make a replay mismatch actionable without
+/// weakening the single composite hash used by deterministic simulation.
+pub const LayerHashes = struct {
+    composite: hash.Hash128,
+    world: hash.Hash128,
+    bodies: hash.Hash128,
+    colliders: hash.Hash128,
+    contacts: hash.Hash128,
+    joints: ?hash.Hash128,
+    sleep: ?hash.Hash128,
+    ccd: ?hash.Hash128,
+    events: hash.Hash128,
+};
 
 /// Hashes the complete future-relevant state owned by the fixed World
 /// pipeline. Scratch SAP/island/row/trace/profile buffers are intentionally
@@ -126,6 +148,43 @@ pub fn canonicalStateHash(world: *const world_mod.World, state: *const State, si
         for (enabled) |value| visitor.writeU8(@intFromBool(value));
     } else visitor.writeU8(0);
     return sink.final128();
+}
+pub fn layeredStateHashes(world: *const world_mod.World, state: *const State, simulation: config.SimulationConfig, inputs: HashInputs, events: []const contact_cache.Event) LayerHashes {
+    var world_sink = hash.Sink.init(.state);
+    var world_visitor = HashVisitor{ .sink = &world_sink };
+    world.visitCanonical(&world_visitor);
+    var body_sink = hash.Sink.init(.state);
+    var body_visitor = HashVisitor{ .sink = &body_sink };
+    world.visitBodiesCanonical(&body_visitor);
+    var collider_sink = hash.Sink.init(.state);
+    var collider_visitor = HashVisitor{ .sink = &collider_sink };
+    world.visitCollidersCanonical(&collider_visitor);
+    var contact_sink = hash.Sink.init(.state);
+    var contact_visitor = HashVisitor{ .sink = &contact_sink };
+    contact_cache.visitCanonical(inputs.cache, &contact_visitor);
+    var event_sink = hash.Sink.init(.state);
+    var event_visitor = HashVisitor{ .sink = &event_sink };
+    contact_cache.visitEventsCanonical(events, &event_visitor);
+    const joint_hash = if (inputs.joint) |joint| block: {
+        var sink = hash.Sink.init(.state);
+        var visitor = HashVisitor{ .sink = &sink };
+        joints.visitCanonical(joint, &visitor);
+        break :block sink.final128();
+    } else null;
+    const sleep_hash = if (inputs.sleep) |storage| block: {
+        var sink = hash.Sink.init(.state);
+        var visitor = HashVisitor{ .sink = &sink };
+        sleeping.visitCanonical(storage, &visitor);
+        break :block sink.final128();
+    } else null;
+    const ccd_hash = if (inputs.ccd_enabled) |enabled| block: {
+        var sink = hash.Sink.init(.state);
+        var visitor = HashVisitor{ .sink = &sink };
+        visitor.writeU64(enabled.len);
+        for (enabled) |value| visitor.writeU8(@intFromBool(value));
+        break :block sink.final128();
+    } else null;
+    return .{ .composite = canonicalStateHash(world, state, simulation, inputs), .world = world_sink.final128(), .bodies = body_sink.final128(), .colliders = collider_sink.final128(), .contacts = contact_sink.final128(), .joints = joint_hash, .sleep = sleep_hash, .ccd = ccd_hash, .events = event_sink.final128() };
 }
 const HashVisitor = struct {
     sink: *hash.Sink,
@@ -1154,65 +1213,136 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
     const initial_len = contacts.cache.len;
     const dt = substepDt(simulation, status);
     for (0..substeps) |_| {
-        push(workspace, .integrate);
-        if (pipeline_workspace.sleep) |sleep| try world.integrateVelocitiesAwake(sleep.storage.awake, dt, status) else world.integrateVelocities(dt, status);
+        const Integrate = struct {
+            world: *world_mod.World,
+            pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+            dt: fp.Fp,
+            status: *fp.MathStatus,
+            fn run(self: *@This()) Error!void {
+                if (self.pipeline_workspace.sleep) |sleep| try self.world.integrateVelocitiesAwake(sleep.storage.awake, self.dt, self.status) else self.world.integrateVelocities(self.dt, self.status);
+            }
+        };
+        var integrate = Integrate{ .world = world, .pipeline_workspace = pipeline_workspace, .dt = dt, .status = status };
+        try dispatchPhase(workspace, .integrate, &integrate, Integrate.run);
         try checkMath(state, .integrate, status);
-        push(workspace, .broadphase);
-        const pairs = rebuildBroadphase(world, contacts.broadphase.assets, simulation, dt, contacts.broadphase.collider_views, contacts.broadphase.proxies, contacts.broadphase.buffers, status) catch |err| {
+        const Broadphase = struct {
+            world: *world_mod.World,
+            contacts: *AnalyticContactWorkspace,
+            simulation: config.SimulationConfig,
+            dt: fp.Fp,
+            status: *fp.MathStatus,
+            pairs: []const broadphase.PairKey = &.{},
+            fn run(self: *@This()) Error!void {
+                self.pairs = rebuildBroadphase(self.world, self.contacts.broadphase.assets, self.simulation, self.dt, self.contacts.broadphase.collider_views, self.contacts.broadphase.proxies, self.contacts.broadphase.buffers, self.status) catch |err| return switch (err) {
+                    error.CapacityExceeded, error.PairCapacity, error.InsufficientEndpoints, error.InsufficientActive, error.ScratchLengthMismatch => error.CapacityExceeded,
+                    else => error.BroadphaseFailure,
+                };
+            }
+        };
+        var broad = Broadphase{ .world = world, .contacts = contacts, .simulation = simulation, .dt = dt, .status = status };
+        dispatchPhase(workspace, .broadphase, &broad, Broadphase.run) catch |err| {
+            if (isDispatchError(err)) return err;
             recordFaultError(state, .broadphase, err, status.fault);
             return error.Faulted;
         };
+        const pairs = broad.pairs;
         try checkMath(state, .broadphase, status);
-        push(workspace, .narrowphase);
-        var narrow_fault_object: ?u64 = null;
-        const patches = narrowRuntimePairsTracked(world, contacts.broadphase.assets, pairs, contacts.convex, contacts.surface, contacts.narrow, status, &narrow_fault_object) catch |err| {
-            recordFaultErrorFor(state, .narrowphase, err, status.fault, narrow_fault_object);
-            return error.Faulted;
+        const Narrow = struct {
+            world: *world_mod.World,
+            contacts: *AnalyticContactWorkspace,
+            pairs: []const broadphase.PairKey,
+            simulation: config.SimulationConfig,
+            pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+            status: *fp.MathStatus,
+            patches: []const contact_cache.Patch = &.{},
+            fault_object: ?u64 = null,
+            fn run(self: *@This()) Error!void {
+                self.patches = narrowRuntimePairsTracked(self.world, self.contacts.broadphase.assets, self.pairs, self.contacts.convex, self.contacts.surface, self.contacts.narrow, self.status, &self.fault_object) catch |err| return switch (err) {
+                    error.CapacityExceeded, error.OutOfScratch, error.OutOfSpace => error.CapacityExceeded,
+                    else => error.ContactFailure,
+                };
+                _ = contact_cache.merge(self.contacts.cache, self.patches, .{ .next = self.contacts.cache_next, .events = self.pipeline_workspace.substep_events }, self.simulation.tolerances.warmstart_normal_cos_min, self.status) catch |err| return switch (err) {
+                    error.CapacityExceeded => error.CapacityExceeded,
+                    else => error.ContactFailure,
+                };
+            }
         };
-        _ = contact_cache.merge(contacts.cache, patches, .{ .next = contacts.cache_next, .events = pipeline_workspace.substep_events }, simulation.tolerances.warmstart_normal_cos_min, status) catch {
-            recordFault(state, .narrowphase, .contact, status.fault);
+        var narrow = Narrow{ .world = world, .contacts = contacts, .pairs = pairs, .simulation = simulation, .pipeline_workspace = pipeline_workspace, .status = status };
+        dispatchPhase(workspace, .narrowphase, &narrow, Narrow.run) catch |err| {
+            if (isDispatchError(err)) return err;
+            recordFaultErrorFor(state, .narrowphase, err, status.fault, narrow.fault_object);
             return error.Faulted;
         };
         try checkMath(state, .narrowphase, status);
-        push(workspace, .islands);
-        _ = buildAnalyticIslands(world, contacts.cache, if (pipeline_workspace.joint) |joint| joint.pool else null, pipeline_workspace.islands, status) catch {
+        const Islands = struct {
+            world: *world_mod.World,
+            contacts: *AnalyticContactWorkspace,
+            pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+            status: *fp.MathStatus,
+            fn run(self: *@This()) Error!void {
+                _ = try buildAnalyticIslands(self.world, self.contacts.cache, if (self.pipeline_workspace.joint) |joint| joint.pool else null, self.pipeline_workspace.islands, self.status);
+            }
+        };
+        var islands = Islands{ .world = world, .contacts = contacts, .pipeline_workspace = pipeline_workspace, .status = status };
+        dispatchPhase(workspace, .islands, &islands, Islands.run) catch |err| {
+            if (isDispatchError(err)) return err;
             recordFault(state, .islands, .contact, status.fault);
             return error.Faulted;
         };
         try checkMath(state, .islands, status);
-        push(workspace, .solve);
-        const solver_contacts = buildAnalyticSolverContacts(world, contacts.broadphase.assets, contacts.cache, pipeline_workspace.solver, status) catch {
+        const Solve = struct {
+            world: *world_mod.World,
+            contacts: *AnalyticContactWorkspace,
+            pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+            simulation: config.SimulationConfig,
+            dt: fp.Fp,
+            status: *fp.MathStatus,
+            solver_contacts: []const contact_solver.Contact = &.{},
+            joint_rows: []constraints.ConstraintRow = &.{},
+            fn run(self: *@This()) Error!void {
+                self.solver_contacts = buildAnalyticSolverContacts(self.world, self.contacts.broadphase.assets, self.contacts.cache, self.pipeline_workspace.solver, self.status) catch |err| return switch (err) {
+                    error.CapacityExceeded, error.OutOfScratch, error.OutOfSpace => error.CapacityExceeded,
+                    else => error.ContactFailure,
+                };
+                if (self.pipeline_workspace.sleep) |sleep| {
+                    try wakeContacts(self.world, sleep, self.pipeline_workspace.islands.edges[0..self.pipeline_workspace.islands.edge_len], self.solver_contacts);
+                    if (self.pipeline_workspace.joint) |joint| _ = try sleeping.wakeActiveJoints(self.world, sleep.storage, self.pipeline_workspace.islands.edges[0..self.pipeline_workspace.islands.edge_len], joint.pool, sleep.requests, sleep.graph_scratch, sleep.wake_events);
+                }
+                self.joint_rows = if (self.pipeline_workspace.joint) |joint| blk: {
+                    const built = try joints.buildPoolRows(self.world, joint.pool, self.dt, joint.rows, joint.scratch, self.status);
+                    break :blk joint.rows[0..built.len];
+                } else &.{};
+                try contact_solver.solveWithJointRows(self.world, self.joint_rows, self.solver_contacts, self.pipeline_workspace.solver.pseudo, solverSettings(self.simulation), self.status);
+            }
+        };
+        var solve = Solve{ .world = world, .contacts = contacts, .pipeline_workspace = pipeline_workspace, .simulation = simulation, .dt = dt, .status = status };
+        dispatchPhase(workspace, .solve, &solve, Solve.run) catch |err| {
+            if (isDispatchError(err)) return err;
             recordFault(state, .solve, .contact, status.fault);
             return error.Faulted;
         };
-        if (pipeline_workspace.sleep) |sleep| {
-            try wakeContacts(world, sleep, pipeline_workspace.islands.edges[0..pipeline_workspace.islands.edge_len], solver_contacts);
-            if (pipeline_workspace.joint) |joint| _ = sleeping.wakeActiveJoints(world, sleep.storage, pipeline_workspace.islands.edges[0..pipeline_workspace.islands.edge_len], joint.pool, sleep.requests, sleep.graph_scratch, sleep.wake_events) catch {
-                recordFault(state, .solve, .contact, status.fault);
-                return error.Faulted;
-            };
-        }
-        const joint_rows: []constraints.ConstraintRow = if (pipeline_workspace.joint) |joint| blk: {
-            const built = joints.buildPoolRows(world, joint.pool, dt, joint.rows, joint.scratch, status) catch {
-                recordFault(state, .solve, .contact, status.fault);
-                return error.Faulted;
-            };
-            break :blk joint.rows[0..built.len];
-        } else &.{};
-        contact_solver.solveWithJointRows(world, joint_rows, solver_contacts, pipeline_workspace.solver.pseudo, solverSettings(simulation), status) catch {
-            recordFault(state, .solve, .contact, status.fault);
-            return error.Faulted;
-        };
+        const joint_rows = solve.joint_rows;
         try checkMath(state, .solve, status);
         if (pipeline_workspace.ccd) |ccd_workspace| {
             if (simulation.features.ccd) {
-                push(workspace, .ccd);
-                _ = resolveCcdSubstep(world, simulation, dt, if (pipeline_workspace.sleep) |sleep| sleep.storage.awake else null, ccd_workspace, contacts, pipeline_workspace.solver, joint_rows, status) catch |err| {
-                    recordFault(state, .ccd, if (err == error.CcdFault) .ccd else .contact, status.fault);
-                    return error.Faulted;
+                const Ccd = struct {
+                    world: *world_mod.World,
+                    simulation: config.SimulationConfig,
+                    dt: fp.Fp,
+                    pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+                    ccd_workspace: *CcdPipelineWorkspace,
+                    contacts: *AnalyticContactWorkspace,
+                    joint_rows: []constraints.ConstraintRow,
+                    status: *fp.MathStatus,
+                    fn run(self: *@This()) Error!void {
+                        _ = try resolveCcdSubstep(self.world, self.simulation, self.dt, if (self.pipeline_workspace.sleep) |sleep| sleep.storage.awake else null, self.ccd_workspace, self.contacts, self.pipeline_workspace.solver, self.joint_rows, self.status);
+                        if (self.pipeline_workspace.joint) |joint| try joints.writeBackImpulses(joint.pool, self.joint_rows);
+                    }
                 };
-                if (pipeline_workspace.joint) |joint| joints.writeBackImpulses(joint.pool, joint_rows) catch {
-                    recordFault(state, .ccd, .contact, status.fault);
+                var ccd_phase = Ccd{ .world = world, .simulation = simulation, .dt = dt, .pipeline_workspace = pipeline_workspace, .ccd_workspace = ccd_workspace, .contacts = contacts, .joint_rows = joint_rows, .status = status };
+                dispatchPhase(workspace, .ccd, &ccd_phase, Ccd.run) catch |err| {
+                    if (isDispatchError(err)) return err;
+                    recordFault(state, .ccd, if (err == error.CcdFault) .ccd else .contact, status.fault);
                     return error.Faulted;
                 };
                 try checkMath(state, .ccd, status);
@@ -1225,33 +1355,70 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
         try checkMath(state, .integrate, status);
     }
     if (pipeline_workspace.sleep) |sleep| {
-        push(workspace, .sleep);
-        const final_islands = buildAnalyticIslands(world, contacts.cache, if (pipeline_workspace.joint) |joint| joint.pool else null, pipeline_workspace.islands, status) catch {
-            recordFault(state, .sleep, .contact, status.fault);
-            return error.Faulted;
+        const Sleep = struct {
+            world: *world_mod.World,
+            contacts: *AnalyticContactWorkspace,
+            pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+            sleep: *SleepWorkspace,
+            simulation: config.SimulationConfig,
+            status: *fp.MathStatus,
+            fn run(self: *@This()) Error!void {
+                const final_islands = try buildAnalyticIslands(self.world, self.contacts.cache, if (self.pipeline_workspace.joint) |joint| joint.pool else null, self.pipeline_workspace.islands, self.status);
+                _ = try sleeping.stepConfigured(self.world, final_islands.islands, final_islands.members, self.sleep.storage, self.simulation, self.sleep.sleep_events, self.status);
+            }
         };
-        _ = sleeping.stepConfigured(world, final_islands.islands, final_islands.members, sleep.storage, simulation, sleep.sleep_events, status) catch {
+        var sleep_phase = Sleep{ .world = world, .contacts = contacts, .pipeline_workspace = pipeline_workspace, .sleep = sleep, .simulation = simulation, .status = status };
+        dispatchPhase(workspace, .sleep, &sleep_phase, Sleep.run) catch |err| {
+            if (isDispatchError(err)) return err;
             recordFault(state, .sleep, .contact, status.fault);
             return error.Faulted;
         };
         try checkMath(state, .sleep, status);
     }
-    push(workspace, .events);
-    var previous = contact_cache.Cache{ .patches = pipeline_workspace.previous, .len = initial_len };
-    const events = contact_cache.merge(&previous, contacts.cache.active(), .{ .next = pipeline_workspace.event_next, .events = pipeline_workspace.tick_events }, simulation.tolerances.warmstart_normal_cos_min, status) catch {
+    const Events = struct {
+        contacts: *AnalyticContactWorkspace,
+        pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+        initial_len: usize,
+        simulation: config.SimulationConfig,
+        status: *fp.MathStatus,
+        events: contact_cache.MergeResult = .{ .events = &.{} },
+        fn run(self: *@This()) Error!void {
+            var previous = contact_cache.Cache{ .patches = self.pipeline_workspace.previous, .len = self.initial_len };
+            self.events = contact_cache.merge(&previous, self.contacts.cache.active(), .{ .next = self.pipeline_workspace.event_next, .events = self.pipeline_workspace.tick_events }, self.simulation.tolerances.warmstart_normal_cos_min, self.status) catch |err| return switch (err) {
+                error.CapacityExceeded => error.CapacityExceeded,
+                else => error.ContactFailure,
+            };
+        }
+    };
+    var event_phase = Events{ .contacts = contacts, .pipeline_workspace = pipeline_workspace, .initial_len = initial_len, .simulation = simulation, .status = status };
+    dispatchPhase(workspace, .events, &event_phase, Events.run) catch |err| {
+        if (isDispatchError(err)) return err;
         recordFault(state, .events, .contact, status.fault);
         return error.Faulted;
     };
+    const events = event_phase.events;
     try checkMath(state, .events, status);
     world.finishTick();
     push(workspace, .hash);
     var result = finish(state, workspace);
-    result.state_hash = canonicalStateHash(world, state, simulation, .{
-        .cache = contacts.cache,
-        .joint = if (pipeline_workspace.joint) |joint| joint.pool else null,
-        .sleep = if (pipeline_workspace.sleep) |sleep| sleep.storage else null,
-        .ccd_enabled = if (pipeline_workspace.ccd) |ccd_workspace| ccd_workspace.items.enabled else null,
-    });
+    const Hash = struct {
+        world: *world_mod.World,
+        state: *State,
+        simulation: config.SimulationConfig,
+        contacts: *AnalyticContactWorkspace,
+        pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+        output: *?hash.Hash128,
+        fn run(self: *@This()) Error!void {
+            self.output.* = canonicalStateHash(self.world, self.state, self.simulation, .{
+                .cache = self.contacts.cache,
+                .joint = if (self.pipeline_workspace.joint) |joint| joint.pool else null,
+                .sleep = if (self.pipeline_workspace.sleep) |sleep| sleep.storage else null,
+                .ccd_enabled = if (self.pipeline_workspace.ccd) |ccd_workspace| ccd_workspace.items.enabled else null,
+            });
+        }
+    };
+    var hash_phase = Hash{ .world = world, .state = state, .simulation = simulation, .contacts = contacts, .pipeline_workspace = pipeline_workspace, .output = &result.state_hash };
+    try dispatchWork(workspace, &hash_phase, Hash.run);
     return .{ .step = result, .events = events.events };
 }
 
@@ -1264,15 +1431,37 @@ fn beginSleeping(world: *world_mod.World, state: *State, simulation: config.Simu
     status.clear();
     workspace.trace_len = 0;
     if (workspace.diagnostics) |diagnostics| diagnostics.reset();
-    push(workspace, .prevalidate);
-    _ = try world.orderedCommands(commands, workspace.commands);
-    // Command wake uses the previous canonical contact/joint graph. It
-    // validates capacity before mutating either sleep storage or World.
-    _ = try buildAnalyticIslands(world, pipeline_workspace.contacts.cache, if (pipeline_workspace.joint) |joint| joint.pool else null, pipeline_workspace.islands, status);
-    push(workspace, .commit);
-    _ = try sleeping.executeCommands(world, sleep.storage, pipeline_workspace.islands.edges[0..pipeline_workspace.islands.edge_len], commands, workspace.commands, sleep.requests, sleep.graph_scratch, sleep.wake_events, tickDt(simulation, status), status);
-    try checkMath(state, .commit, status);
     state.in_step = true;
+    errdefer state.in_step = false;
+    const Prevalidate = struct {
+        world: *world_mod.World,
+        commands: []const world_mod.Command,
+        workspace: *Workspace,
+        pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+        status: *fp.MathStatus,
+        fn run(self: *@This()) Error!void {
+            _ = try self.world.orderedCommands(self.commands, self.workspace.commands);
+            // Command wake uses the previous canonical contact/joint graph.
+            _ = try buildAnalyticIslands(self.world, self.pipeline_workspace.contacts.cache, if (self.pipeline_workspace.joint) |joint| joint.pool else null, self.pipeline_workspace.islands, self.status);
+        }
+    };
+    var prevalidate = Prevalidate{ .world = world, .commands = commands, .workspace = workspace, .pipeline_workspace = pipeline_workspace, .status = status };
+    try dispatchPhase(workspace, .prevalidate, &prevalidate, Prevalidate.run);
+    const Commit = struct {
+        world: *world_mod.World,
+        commands: []const world_mod.Command,
+        workspace: *Workspace,
+        pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+        sleep: *SleepWorkspace,
+        dt: fp.Fp,
+        status: *fp.MathStatus,
+        fn run(self: *@This()) Error!void {
+            _ = try sleeping.executeCommands(self.world, self.sleep.storage, self.pipeline_workspace.islands.edges[0..self.pipeline_workspace.islands.edge_len], self.commands, self.workspace.commands, self.sleep.requests, self.sleep.graph_scratch, self.sleep.wake_events, self.dt, self.status);
+        }
+    };
+    var commit = Commit{ .world = world, .commands = commands, .workspace = workspace, .pipeline_workspace = pipeline_workspace, .sleep = sleep, .dt = tickDt(simulation, status), .status = status };
+    try dispatchPhase(workspace, .commit, &commit, Commit.run);
+    try checkMath(state, .commit, status);
 }
 fn wakeContacts(world: *world_mod.World, sleep: *SleepWorkspace, edges: []const constraints.Edge, contacts: []const contact_solver.Contact) sleeping.Error!void {
     var count: usize = 0;
@@ -1293,11 +1482,31 @@ fn begin(world: *world_mod.World, state: *State, simulation: config.SimulationCo
     status.clear();
     workspace.trace_len = 0;
     if (workspace.diagnostics) |diagnostics| diagnostics.reset();
-    push(workspace, .prevalidate);
-    const ordered = try world.orderedCommands(commands, workspace.commands);
     state.in_step = true;
-    push(workspace, .commit);
-    try world.execute(ordered, workspace.commands, tickDt(simulation, status), status);
+    errdefer state.in_step = false;
+    const Prevalidate = struct {
+        world: *world_mod.World,
+        commands: []const world_mod.Command,
+        scratch: []world_mod.Command,
+        fn run(self: *@This()) Error!void {
+            _ = try self.world.orderedCommands(self.commands, self.scratch);
+        }
+    };
+    var prevalidate = Prevalidate{ .world = world, .commands = commands, .scratch = workspace.commands };
+    try dispatchPhase(workspace, .prevalidate, &prevalidate, Prevalidate.run);
+    const ordered = workspace.commands[0..commands.len];
+    const Commit = struct {
+        world: *world_mod.World,
+        ordered: []const world_mod.Command,
+        scratch: []world_mod.Command,
+        dt: fp.Fp,
+        status: *fp.MathStatus,
+        fn run(self: *@This()) Error!void {
+            try self.world.execute(self.ordered, self.scratch, self.dt, self.status);
+        }
+    };
+    var commit = Commit{ .world = world, .ordered = ordered, .scratch = workspace.commands, .dt = tickDt(simulation, status), .status = status };
+    try dispatchPhase(workspace, .commit, &commit, Commit.run);
     try checkMath(state, .commit, status);
 }
 fn checkMath(state: *State, phase: Phase, status: *const fp.MathStatus) Error!void {
@@ -1322,7 +1531,8 @@ fn faultCode(err: anyerror) FaultCode {
     return switch (err) {
         error.InvalidCollider, error.InvalidBody, error.CapacityExceeded => .world,
         error.InvalidShape, error.InvalidBodyShape, error.InvalidAsset, error.InvalidTransform, error.UnsupportedShape => .shape,
-        error.InvalidContact => .contact,
+        error.InvalidContact, error.ContactFailure => .contact,
+        error.BroadphaseFailure => .broadphase,
         else => .broadphase,
     };
 }
@@ -1335,9 +1545,16 @@ fn faultDetail(err: anyerror) FaultDetail {
         error.InvalidTransform => .invalid_transform,
         error.CapacityExceeded, error.PairCapacity, error.InsufficientEndpoints, error.InsufficientActive => .capacity_exceeded,
         error.UnsupportedShape => .unsupported_shape,
-        error.InvalidContact => .contact,
+        error.InvalidContact, error.ContactFailure => .contact,
+        error.BroadphaseFailure => .broadphase,
         error.CcdFault => .ccd,
         else => .broadphase,
+    };
+}
+fn isDispatchError(err: anyerror) bool {
+    return switch (err) {
+        error.Backpressure, error.CallbackFailed, error.Cancelled, error.WorkerFault, error.Reentrant, error.Shutdown => true,
+        else => false,
     };
 }
 
@@ -1354,6 +1571,36 @@ fn push(workspace: *Workspace, phase: Phase) void {
     workspace.trace[workspace.trace_len] = phase;
     workspace.trace_len += 1;
     if (workspace.diagnostics) |diagnostics| diagnostics.phase_count[@intFromEnum(phase)] += 1;
+}
+
+/// Executes one ordered production phase through the configured synchronous
+/// batch backend. The context is borrowed until the barrier returns. Kernel
+/// errors are preserved instead of being collapsed into a dispatcher error.
+fn dispatchPhase(workspace: *Workspace, phase: Phase, context: anytype, comptime run_fn: anytype) Error!void {
+    push(workspace, phase);
+    try dispatchWork(workspace, context, run_fn);
+}
+
+fn dispatchWork(workspace: *Workspace, context: anytype, comptime run_fn: anytype) Error!void {
+    const Context = @TypeOf(context.*);
+    const Envelope = struct {
+        value: *Context,
+        failure: ?Error = null,
+
+        fn run(raw: *anyopaque, index: u32) !void {
+            if (index != 0) return error.WorkerFault;
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            run_fn(self.value) catch |err| {
+                self.failure = err;
+                return err;
+            };
+        }
+    };
+    var envelope = Envelope{ .value = context };
+    workspace.dispatcher.dispatch(.{ .context = &envelope, .job_count = 1, .run = Envelope.run }) catch |err| {
+        if (envelope.failure) |failure| return failure;
+        return err;
+    };
 }
 fn compose(parent: geometry.Transform3, local: geometry.Transform3, status: *fp.MathStatus) geometry.Transform3 {
     return .{ .position = parent.apply(local.position, status), .orientation = parent.orientation.mul(local.orientation, status) };

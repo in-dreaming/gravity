@@ -49,7 +49,10 @@ surface shape, or any stale/non-live ID reference before commit.
 
 ## GRAVREPL records
 
-Replay stores a validated initial `GRAVSNAP`, then canonical command batches
-and the expected full/section hashes per tick.  A mismatch is located by binary
-search over recorded hashes and reported as the first section, ID and field
-whose canonical encoding differs.
+Replay stores a validated initial `GRAVSNAP`, then canonical `World.Command`
+batches (count followed by sorted command keys, body IDs and raw payloads)
+and the expected full/section hashes per tick. A mismatch is located by a
+forward scan in canonical tick order: hash divergence is not generally
+monotonic, so binary search could skip an earlier mismatch after a later
+reconvergence. The diagnostic reports the first section, ID and field whose
+canonical encoding differs.
