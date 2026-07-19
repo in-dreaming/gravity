@@ -35,29 +35,37 @@ fn waitAll(tasks: []spindle.Task) !void {
     for (tasks) |*task| try task.wait();
 }
 
+fn nowNs() i96 {
+    return std.Io.Clock.Timestamp.now(std.Options.debug_io, .awake).raw.nanoseconds;
+}
+
+fn elapsed(start: i96) u64 {
+    return @intCast(nowNs() - start);
+}
+
 fn report(backend: []const u8, workers: usize, submit_ns: u64, barrier_ns: u64, help_until_ns: u64, shutdown_ns: u64, active_workers: usize, min_tasks: u64, max_tasks: u64) void {
     std.debug.print("{{\"schema\":\"gravity.executor-overhead.v1\",\"backend\":\"{s}\",\"workers\":{d},\"tasks\":{d},\"submit_total_ns\":{d},\"submit_per_task_ns\":{d},\"barrier_ns\":{d},\"help_until_ns\":{d},\"shutdown_ns\":{d},\"active_workers\":{d},\"min_tasks_per_worker\":{d},\"max_tasks_per_worker\":{d}}}\n", .{ backend, workers, task_count, submit_ns, submit_ns / task_count, barrier_ns, help_until_ns, shutdown_ns, active_workers, min_tasks, max_tasks });
 }
 
 fn benchSerial(tasks: []spindle.Task, batch: *Batch) !void {
     initTasks(tasks, batch);
-    var timer = try std.time.Timer.start();
+    var start = nowNs();
     for (tasks) |*task| {
         if (!task.tryQueue()) return error.DuplicateSubmission;
         task.execute();
     }
-    const submit_ns = timer.read();
-    timer.reset();
+    const submit_ns = elapsed(start);
+    start = nowNs();
     try waitAll(tasks);
-    const barrier_ns = timer.read();
+    const barrier_ns = elapsed(start);
     try resetTasks(tasks, batch);
-    timer.reset();
+    start = nowNs();
     for (tasks) |*task| {
         if (!task.tryQueue()) return error.DuplicateSubmission;
         task.execute();
     }
     while (!complete(batch)) std.atomic.spinLoopHint();
-    const help_ns = timer.read();
+    const help_ns = elapsed(start);
     report("serial-inline", 1, submit_ns, barrier_ns, help_ns, 0, 1, task_count, task_count);
 }
 
@@ -65,37 +73,37 @@ fn benchFixed(allocator: std.mem.Allocator, tasks: []spindle.Task, batch: *Batch
     var pool = try spindle.FixedPool.init(allocator, workers, task_count * 2);
     defer pool.deinit();
     initTasks(tasks, batch);
-    var timer = try std.time.Timer.start();
+    var start = nowNs();
     for (tasks) |*task| try pool.submit(task, .{});
-    const submit_ns = timer.read();
-    timer.reset();
+    const submit_ns = elapsed(start);
+    start = nowNs();
     try waitAll(tasks);
-    const barrier_ns = timer.read();
+    const barrier_ns = elapsed(start);
     try resetTasks(tasks, batch);
     for (tasks) |*task| try pool.submit(task, .{});
-    timer.reset();
+    start = nowNs();
     pool.helpUntil(batch, complete);
-    const help_ns = timer.read();
-    timer.reset();
+    const help_ns = elapsed(start);
+    start = nowNs();
     pool.shutdown(.drain);
-    report("fixed-pool-diagnostic", workers, submit_ns, barrier_ns, help_ns, timer.read(), workers, 0, 0);
+    report("fixed-pool-diagnostic", workers, submit_ns, barrier_ns, help_ns, elapsed(start), workers, 0, 0);
 }
 
 fn benchWorkStealing(allocator: std.mem.Allocator, tasks: []spindle.Task, batch: *Batch, workers: usize) !void {
     var pool = try spindle.WorkStealingExecutor.init(allocator, .{ .workers = workers, .local_capacity = task_count, .injection_capacity = task_count * 2, .urgent_capacity = 64 });
     defer pool.deinit();
     initTasks(tasks, batch);
-    var timer = try std.time.Timer.start();
+    var start = nowNs();
     for (tasks) |*task| try pool.submit(task, .{});
-    const submit_ns = timer.read();
-    timer.reset();
+    const submit_ns = elapsed(start);
+    start = nowNs();
     try waitAll(tasks);
-    const barrier_ns = timer.read();
+    const barrier_ns = elapsed(start);
     try resetTasks(tasks, batch);
     for (tasks) |*task| try pool.submit(task, .{});
-    timer.reset();
+    start = nowNs();
     pool.helpUntil(batch, complete);
-    const help_ns = timer.read();
+    const help_ns = elapsed(start);
     var active: usize = 0;
     var min_tasks: u64 = std.math.maxInt(u64);
     var max_tasks: u64 = 0;
@@ -105,9 +113,9 @@ fn benchWorkStealing(allocator: std.mem.Allocator, tasks: []spindle.Task, batch:
         min_tasks = @min(min_tasks, stats.executed);
         max_tasks = @max(max_tasks, stats.executed);
     }
-    timer.reset();
+    start = nowNs();
     pool.shutdown(.drain);
-    report("spindle-work-stealing", workers, submit_ns, barrier_ns, help_ns, timer.read(), active, min_tasks, max_tasks);
+    report("spindle-work-stealing", workers, submit_ns, barrier_ns, help_ns, elapsed(start), active, min_tasks, max_tasks);
 }
 
 pub fn main() !void {
