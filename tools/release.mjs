@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 const nativeTargets = ["windows-x86_64", "windows-aarch64", "linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64"];
@@ -53,14 +54,34 @@ function tarHeader(entry) {
   return header;
 }
 
-async function addTree(entries, diskRoot, archiveRoot) {
+async function normalizeStaticArchive(disk) {
+  const temporary = await mkdtemp(path.join(tmpdir(), "gravity-release-ar-"));
+  try {
+    const input = path.join(temporary, "input.a");
+    const output = path.join(temporary, "normalized.a");
+    await writeFile(input, await readFile(disk));
+    const archivedNames = execFileSync("zig", ["ar", "t", input], { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
+    const members = archivedNames.map(name => name.split(/[\\/]/).at(-1));
+    if (new Set(members).size !== members.length) throw new Error(`static archive has duplicate member basenames: ${disk}`);
+    execFileSync("zig", ["ar", "x", input], { cwd: temporary, stdio: "pipe" });
+    execFileSync("zig", ["ar", "rcsD", output, ...members], { cwd: temporary, stdio: "pipe" });
+    return await readFile(output);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
+async function addTree(entries, diskRoot, archiveRoot, normalizeArchives = false) {
   const names = (await readdir(diskRoot, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name, "en"));
   for (const item of names) {
     if (excluded.has(item.name) || generatedDirectory.test(item.name)) continue;
     const disk = path.join(diskRoot, item.name);
     const archive = `${archiveRoot}/${item.name}`.replaceAll("\\", "/");
-    if (item.isDirectory()) await addTree(entries, disk, archive);
-    else if (item.isFile()) entries.push({ name: archive, data: await readFile(disk) });
+    if (item.isDirectory()) await addTree(entries, disk, archive, normalizeArchives);
+    else if (item.isFile()) {
+      const isStaticArchive = item.name.endsWith(".a") || item.name.endsWith("_static.lib");
+      entries.push({ name: archive, data: normalizeArchives && isStaticArchive ? await normalizeStaticArchive(disk) : await readFile(disk) });
+    }
     else if (item.isSymbolicLink()) throw new Error(`release input may not contain symlinks: ${disk}`);
   }
 }
@@ -118,7 +139,7 @@ async function generate(prefix, version, commit) {
   for (const target of nativeTargets) {
     const entries = [];
     await common(entries, root);
-    await addTree(entries, path.join(prefix, "abi", target, "lib"), "lib");
+    await addTree(entries, path.join(prefix, "abi", target, "lib"), "lib", true);
     await emit(target, entries);
   }
 
