@@ -304,6 +304,15 @@ pub fn build(b: *std.Build) void {
         prior_gate_run = &run.step;
     }
     performance_gate.dependOn(prior_gate_run.?);
+    const performance_ci = b.step("performance-ci", "Validate Task 24 schema and reject only significant regressions on shared CI");
+    var prior_ci_run: ?*std.Build.Step = null;
+    inline for ([_][]const u8{ "Small", "Medium" }) |scene| {
+        const run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
+        run.addArgs(&.{ scene, "4", "2", "8", "ci" });
+        if (prior_ci_run) |prior| run.step.dependOn(prior);
+        prior_ci_run = &run.step;
+    }
+    performance_ci.dependOn(prior_ci_run.?);
 
     const wasm_validate = b.step("wasm-validate", "Run WASI golden vectors and benchmark with wasmtime");
     const wasm_golden = addZigTestArtifact(b, "golden-fp-wasi", wasi_target, .ReleaseSafe, metadata, "tests/golden/fp_golden.zig");

@@ -9,6 +9,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
@@ -18,3 +20,4 @@ jobs:
       - run: zig build abi-test
       - run: zig build fuzz
       - run: zig build benchmark
+      - run: zig build performance-ci

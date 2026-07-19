@@ -24,7 +24,8 @@ const default_samples: usize = 64;
 const default_warmup: usize = 8;
 const mesh_source_id: u64 = 24_024;
 
-const Options = struct { scene: corpus.Scene, samples: usize = default_samples, warmup: usize = default_warmup, workers: usize = 0, enforce_budget: bool = false };
+const Enforcement = enum { none, fixed_runner, shared_ci };
+const Options = struct { scene: corpus.Scene, samples: usize = default_samples, warmup: usize = default_warmup, workers: usize = 0, enforcement: Enforcement = .none };
 
 const Profile = struct {
     current: ?gravity.dynamics.pipeline.Phase = null,
@@ -356,7 +357,12 @@ fn measure(options: Options) !void {
         const detail: gravity.dynamics.pipeline.ProfileDetail = @enumFromInt(field.value);
         std.debug.print("{{\"schema\":\"gravity.profile-detail.v1\",\"scene\":\"{s}\",\"detail\":\"{s}\",\"elapsed_ns\":{d}}}\n", .{ options.scene.name, field.name, profile.detail_elapsed[@intFromEnum(detail)] });
     }
-    if (options.enforce_budget and !budget_pass) return error.ProductBudgetExceeded;
+    if (options.enforcement == .fixed_runner and !budget_pass) return error.ProductBudgetExceeded;
+    if (options.enforcement == .shared_ci) {
+        const noise_multiplier = 2;
+        const significant_regression = tick_p95 > options.scene.budget.native_p95_ns * noise_multiplier or tick_p99 > options.scene.budget.native_p99_ns * noise_multiplier or snapshot_p95 > options.scene.budget.snapshot_p95_ns * noise_multiplier or rollback_p95 > options.scene.budget.rollback_8_p95_ns * noise_multiplier or setup_bytes > options.scene.budget.max_workspace_bytes;
+        if (significant_regression) return error.SignificantPerformanceRegression;
+    }
 }
 
 fn parseOptions(init: std.process.Init) !Options {
@@ -370,8 +376,7 @@ fn parseOptions(init: std.process.Init) !Options {
     if (args.next()) |warmup| result.warmup = try std.fmt.parseInt(usize, warmup, 10);
     if (args.next()) |workers| result.workers = try std.fmt.parseInt(usize, workers, 10);
     if (args.next()) |mode| {
-        if (!std.mem.eql(u8, mode, "gate")) return error.InvalidArguments;
-        result.enforce_budget = true;
+        if (std.mem.eql(u8, mode, "gate")) result.enforcement = .fixed_runner else if (std.mem.eql(u8, mode, "ci")) result.enforcement = .shared_ci else return error.InvalidArguments;
     }
     if (args.next() != null or result.samples == 0) return error.InvalidArguments;
     return result;
