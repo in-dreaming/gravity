@@ -1,9 +1,11 @@
 import { defineConfig } from "vite";
 
+const installPrefix = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.GRAVITY_INSTALL_PREFIX ?? "../../zig-out";
+
 export default defineConfig({
-  publicDir: "../../zig-out/bin/demo-assets",
+  publicDir: `${installPrefix}/bin/demo-assets`,
   build: {
-    outDir: "../../zig-out/demo",
+    outDir: `${installPrefix}/demo`,
     emptyOutDir: true,
     target: "es2022"
   }

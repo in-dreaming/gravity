@@ -90,8 +90,11 @@ async function common(entries, root) {
 
 async function generate(prefix, version, commit) {
   const root = process.cwd();
-  const status = execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: root, encoding: "utf8" });
-  if (status !== "") throw new Error("release generation requires a clean source and submodule worktree");
+  const status = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: root, encoding: "utf8" });
+  if (status !== "") throw new Error("release generation requires clean tracked source and submodule worktrees");
+  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
+  const unexpected = untracked.filter(name => !/^(?:\.zig-cache[^/]*|\.zig-global[^/]*|zig-out[^/]*)\//.test(name.replaceAll("\\", "/")));
+  if (unexpected.length !== 0) throw new Error(`release generation found untracked source:\n${unexpected.join("\n")}`);
   const actualCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   if (actualCommit !== commit) throw new Error(`release commit mismatch: ${commit} != ${actualCommit}`);
   const output = path.join(prefix, "release");
