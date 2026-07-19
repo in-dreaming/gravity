@@ -115,6 +115,7 @@ fn runScene(allocator: std.mem.Allocator, label: []const u8, body_count: u32) !v
     std.debug.print("{s}: snapshot\n", .{label});
     var snapshot_size: u64 = 0;
     try expectAbi(abi.gravity_v1_world_snapshot_size(world, &snapshot_size));
+    std.debug.print("{s}: snapshot bytes {d}\n", .{ label, snapshot_size });
     const snapshot = try allocator.alloc(u8, @intCast(snapshot_size));
     defer allocator.free(snapshot);
     var required: u64 = 0;

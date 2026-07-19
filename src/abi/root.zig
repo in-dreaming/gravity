@@ -540,7 +540,11 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
     const surface_contacts = allocSlice(allocator, gjk.ContactPoint, @as(usize, query_capacity) * 4) catch return insufficient_memory;
     const surface_merged = allocSlice(allocator, gjk.ContactPoint, @as(usize, query_capacity) * 4) catch return insufficient_memory;
     const pipeline_payload = allocSlice(allocator, u8, 256) catch return insufficient_memory;
-    const bodies_payload = allocSlice(allocator, u8, @as(usize, desc.body_capacity) * 256 + 256) catch return insufficient_memory;
+    // Snapshot body slots are variable only by liveness; an alive slot's
+    // frozen encoding is 273 bytes. Keep the rollback/snapshot buffer valid at
+    // full capacity instead of relying on the header margin to cover a small
+    // per-slot underestimate.
+    const bodies_payload = allocSlice(allocator, u8, @as(usize, desc.body_capacity) * 273 + 256) catch return insufficient_memory;
     const colliders_payload = allocSlice(allocator, u8, @as(usize, desc.collider_capacity) * 256 + 256) catch return insufficient_memory;
     const contacts_payload = allocSlice(allocator, u8, @as(usize, desc.contact_capacity) * 512 + 256) catch return insufficient_memory;
     const snapshot_output = allocSlice(allocator, u8, pipeline_payload.len + bodies_payload.len + colliders_payload.len + contacts_payload.len + 1024) catch return insufficient_memory;
