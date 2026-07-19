@@ -4,6 +4,7 @@ pub const abi_version: u32 = 1;
 pub const protocol_version: u32 = 1;
 pub const snapshot_format_version: u32 = 1;
 pub const asset_format_version: u32 = 2;
+pub const package_version = "1.0.0";
 
 pub const BuildMetadata = struct {
     commit: []const u8,

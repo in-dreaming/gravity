@@ -1,12 +1,61 @@
-name: CI
+name: Product qualification
 
 on:
   push:
   pull_request:
 
 jobs:
-  linux-x86_64:
+  native-matrix:
+    name: ${{ matrix.name }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            runner: windows-2025
+          - name: windows-aarch64
+            runner: windows-11-arm
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+          - name: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - name: macos-x86_64
+            runner: macos-15-intel
+          - name: macos-aarch64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig fmt --check .
+      - run: zig build qualification-native -j1
+
+  wasm:
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+      - uses: bytecodealliance/actions/wasmtime/setup@v1
+      - run: zig build wasm-validate -j1
+      - run: zig build test-pipeline-long-run-wasm -j1
+      - run: zig build abi-wasm-smoke -j1
+
+  demo:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,14 +69,41 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11.7.0
-      - run: zig fmt --check .
-      - run: zig build test-all-modes
-      - run: zig build determinism
-      - run: zig build abi-test
-      - run: zig build fuzz
-      - run: zig build security-gate -j1
-      - run: zig build benchmark
-      - run: zig build performance-ci
-      - run: zig build demo
       - run: pnpm --dir demo/web exec playwright install --with-deps chromium
-      - run: zig build demo-test
+      - run: zig build demo-test -j1
+      - run: zig build demo-isolation -j1
+
+  reproducible-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - run: zig build release-check -j1 -p zig-out-a --cache-dir .zig-cache-a --global-cache-dir .zig-global-a
+      - run: zig build release-check -j1 -p zig-out-b --cache-dir .zig-cache-b --global-cache-dir .zig-global-b
+      - run: node tools/release.mjs --compare zig-out-a/release zig-out-b/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gravity-1.0.0-release
+          path: zig-out-a/release
+          if-no-files-found: error
+
+  complete:
+    if: always()
+    needs: [native-matrix, wasm, demo, reproducible-release]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test '${{ needs.native-matrix.result }}' = success
+      - run: test '${{ needs.wasm.result }}' = success
+      - run: test '${{ needs.demo.result }}' = success
+      - run: test '${{ needs.reproducible-release.result }}' = success

@@ -2,8 +2,8 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "gravity-task25-sbom",
-  "documentNamespace": "https://gravity.invalid/spdx/task25-2026-07-19",
+  "name": "gravity-1.0.0-sbom",
+  "documentNamespace": "https://gravity.invalid/spdx/release-1.0.0",
   "creationInfo": {
     "created": "2026-07-19T12:00:00Z",
     "creators": ["Tool: Gravity Task 25 security audit"]
@@ -12,7 +12,7 @@
     {
       "name": "Gravity",
       "SPDXID": "SPDXRef-Package-Gravity",
-      "versionInfo": "0.1.0-dev",
+      "versionInfo": "1.0.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",
@@ -28,6 +28,66 @@
       "licenseConcluded": "MIT",
       "licenseDeclared": "MIT",
       "copyrightText": "Copyright (c) 2026 in dreaming"
+    },
+    {
+      "name": "React",
+      "SPDXID": "SPDXRef-Package-React",
+      "versionInfo": "19.2.7",
+      "downloadLocation": "https://registry.npmjs.org/react/-/react-19.2.7.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "React DOM",
+      "SPDXID": "SPDXRef-Package-ReactDOM",
+      "versionInfo": "19.2.7",
+      "downloadLocation": "https://registry.npmjs.org/react-dom/-/react-dom-19.2.7.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "Three.js",
+      "SPDXID": "SPDXRef-Package-Three",
+      "versionInfo": "0.185.1",
+      "downloadLocation": "https://registry.npmjs.org/three/-/three-0.185.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "Vite",
+      "SPDXID": "SPDXRef-Package-Vite",
+      "versionInfo": "7.3.1",
+      "downloadLocation": "https://registry.npmjs.org/vite/-/vite-7.3.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "TypeScript",
+      "SPDXID": "SPDXRef-Package-TypeScript",
+      "versionInfo": "5.9.3",
+      "downloadLocation": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "Playwright Test",
+      "SPDXID": "SPDXRef-Package-Playwright",
+      "versionInfo": "1.61.1",
+      "downloadLocation": "https://registry.npmjs.org/@playwright/test/-/test-1.61.1.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
     }
   ],
   "relationships": [
@@ -36,6 +96,39 @@
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Package-Spindle",
       "comment": "Native executor-only adapter; no aggregate Runtime or optional persistence subsystem is linked."
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Gravity",
+      "relationshipType": "OTHER",
+      "relatedSpdxElement": "SPDXRef-Package-React",
+      "comment": "Development and local Demo dependency; excluded from the core package graph."
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Gravity",
+      "relationshipType": "OTHER",
+      "relatedSpdxElement": "SPDXRef-Package-ReactDOM",
+      "comment": "Development and local Demo dependency; excluded from the core package graph."
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Gravity",
+      "relationshipType": "OTHER",
+      "relatedSpdxElement": "SPDXRef-Package-Three",
+      "comment": "Development and local Demo dependency; excluded from the core package graph."
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Gravity",
+      "relationshipType": "OTHER",
+      "relatedSpdxElement": "SPDXRef-Package-Vite"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Gravity",
+      "relationshipType": "OTHER",
+      "relatedSpdxElement": "SPDXRef-Package-TypeScript"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Gravity",
+      "relationshipType": "OTHER",
+      "relatedSpdxElement": "SPDXRef-Package-Playwright"
     }
   ]
 }

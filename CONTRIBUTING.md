@@ -22,12 +22,12 @@ from `build.zig`, so invoking Zig from another working directory is supported):
 - `zig build -Dtarget=wasm32-freestanding`
 - `zig build -Dtarget=aarch64-linux-gnu`
 - `zig build demo`
+- `zig build release-check -j1`
 
-`zig build demo` is the only foundation command that probes Node.js and pnpm.
-It builds the core WebAssembly artifact and checks those frontend prerequisites;
-the React/Vite application is added in Task 26. `zig build demo-run` performs
-the same prerequisite checks and prints the explicit hand-off message until
-that application exists.
+`zig build demo` and release packaging are the only commands that require
+Node.js and pnpm. `zig build demo-run` is the sole supported local Demo launch
+entry. Release qualification and the platform matrix are documented under
+`docs/release` and `.github/workflows/ci.yml`.
 
 Keep generated artifacts under `zig-out` or Zig cache directories. Do not
 commit generated build output, and do not add runtime floating-point math or

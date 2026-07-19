@@ -1,6 +1,6 @@
 .{
     .name = .gravity,
-    .version = "0.1.0-dev",
+    .version = "1.0.0",
     .fingerprint = 0x5a1d25a72ceaff20,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
@@ -14,6 +14,7 @@
         "tools",
         "docs",
         "third_party/spindle",
+        "README.md",
         "CONTRIBUTING.md",
         "LICENSE",
         "SECURITY.md",

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const required_zig_version = "0.16.0";
+const package_version = "1.0.0";
 
 pub fn build(b: *std.Build) void {
     if (!std.mem.eql(u8, builtin.zig_version_string, required_zig_version)) {
@@ -73,7 +74,9 @@ pub fn build(b: *std.Build) void {
     const abi_artifacts = b.step("abi-artifacts", "Build Task 22 Windows, Linux, macOS, and WASM artifacts");
     const artifact_targets = .{
         .{ "windows-x86_64", std.Target.Query{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu } },
+        .{ "windows-aarch64", std.Target.Query{ .cpu_arch = .aarch64, .os_tag = .windows, .abi = .gnu } },
         .{ "linux-x86_64", std.Target.Query{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl } },
+        .{ "linux-aarch64", std.Target.Query{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .musl } },
         .{ "macos-x86_64", std.Target.Query{ .cpu_arch = .x86_64, .os_tag = .macos } },
         .{ "macos-aarch64", std.Target.Query{ .cpu_arch = .aarch64, .os_tag = .macos } },
     };
@@ -548,6 +551,44 @@ pub fn build(b: *std.Build) void {
     const vite_run = b.addSystemCommand(&.{ "pnpm", "--dir", "demo/web", "run", "dev" });
     vite_run.step.dependOn(&vite_build.step);
     demo_run.dependOn(&vite_run.step);
+
+    const release = b.step("release", "Build deterministic Task 28 source, native, WASM and Demo release packages");
+    const release_package = b.addSystemCommand(&.{ "node", "tools/release.mjs", "--generate" });
+    release_package.addArg(b.getInstallPath(.prefix, ""));
+    release_package.addArg(package_version);
+    release_package.addArg(std.mem.trim(u8, b.run(&.{ "git", "rev-parse", "HEAD" }), " \t\r\n"));
+    release_package.step.dependOn(abi_artifacts);
+    release_package.step.dependOn(&vite_build.step);
+    release.dependOn(&release_package.step);
+
+    const release_check = b.step("release-check", "Verify Task 28 release manifest and SHA-256 checksums");
+    const verify_release = b.addSystemCommand(&.{ "node", "tools/release.mjs", "--verify" });
+    verify_release.addArg(b.getInstallPath(.prefix, "release"));
+    verify_release.step.dependOn(&release_package.step);
+    release_check.dependOn(&verify_release.step);
+
+    const qualification_audit = b.step("qualification-audit", "Audit Task 28 records, unfinished code, documents, versions, SBOM and CI matrix");
+    const run_qualification_audit = b.addSystemCommand(&.{ "node", "tools/qualification_audit.mjs" });
+    qualification_audit.dependOn(&run_qualification_audit.step);
+    release_check.dependOn(qualification_audit);
+
+    const qualification_native = b.step("qualification-native", "Run the complete Task 28 native mode, worker, long-run, fuzz, ABI, security and performance gate");
+    inline for (.{ core_all_modes, assets_all_modes, geometry_all_modes, runtime_shapes_all_modes, broadphase_all_modes, analytic_all_modes, gjk_all_modes, mesh_collision_all_modes, contact_cache_all_modes, dynamics_all_modes, constraints_all_modes, contact_solver_all_modes, joints_all_modes, joints_scenarios_all_modes, queries_all_modes, sleeping_all_modes, ccd_all_modes, pipeline_all_modes, snapshot_all_modes, abi_all_modes }) |gate| qualification_native.dependOn(gate);
+    qualification_native.dependOn(pipeline_long_run);
+    qualification_native.dependOn(fuzz_all_modes);
+    qualification_native.dependOn(job_scaling);
+    qualification_native.dependOn(security_gate);
+    qualification_native.dependOn(performance_ci);
+    qualification_native.dependOn(determinism);
+    qualification_native.dependOn(qualification_audit);
+
+    const product_qualification = b.step("product-qualification", "Run the complete Task 28 local product qualification and release gate");
+    product_qualification.dependOn(qualification_native);
+    product_qualification.dependOn(wasm_validate);
+    product_qualification.dependOn(wasm_pipeline_long_run);
+    product_qualification.dependOn(wasm_abi_smoke);
+    product_qualification.dependOn(demo_test);
+    product_qualification.dependOn(release_check);
 }
 
 fn addBuildMetadata(b: *std.Build) *std.Build.Step.Options {
