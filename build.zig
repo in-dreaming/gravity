@@ -84,7 +84,9 @@ pub fn build(b: *std.Build) void {
         const artifact_target = b.resolveTargetQuery(entry[1]);
         const artifact_static = b.addLibrary(.{ .name = "gravity_static", .root_module = addAbiModule(b, artifact_target, .ReleaseSafe, metadata), .linkage = .static });
         artifact_static.bundle_compiler_rt = true;
+        artifact_static.root_module.strip = true;
         const artifact_shared = b.addLibrary(.{ .name = "gravity", .root_module = addAbiModule(b, artifact_target, .ReleaseSafe, metadata), .linkage = .dynamic });
+        artifact_shared.root_module.strip = true;
         abi_artifacts.dependOn(&b.addInstallArtifact(artifact_static, .{ .dest_dir = .{ .override = .{ .custom = b.fmt("abi/{s}/lib", .{entry[0]}) } } }).step);
         abi_artifacts.dependOn(&b.addInstallArtifact(artifact_shared, .{ .dest_dir = .{ .override = .{ .custom = b.fmt("abi/{s}/lib", .{entry[0]}) } } }).step);
     }
