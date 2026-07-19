@@ -171,9 +171,13 @@ test "bounded Gravity Spindle lifecycle sequence fuzz preserves terminal reset i
         seed = seed *% 6_364_136_223_846_793_005 +% 1;
         const count: u32 = @intCast(seed % 5);
         context.fail_index = if ((seed >> 8) % 17 == 0 and count != 0) @intCast((seed >> 16) % count) else null;
+        var generations_before: [slots.len]u64 = undefined;
+        for (slots, 0..) |slot, i| generations_before[i] = slot.generation;
         const result = dispatcher.dispatch(.{ .context = &context, .job_count = count, .run = run });
         if (count > 3) {
             try std.testing.expectError(error.Backpressure, result);
+            for (slots, 0..) |slot, i| try std.testing.expectEqual(generations_before[i], slot.generation);
+            continue;
         } else if (context.fail_index != null) {
             try std.testing.expectError(error.CallbackFailed, result);
         } else try result;
