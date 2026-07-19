@@ -157,6 +157,52 @@ test "Spindle adapter preflights slab backpressure and reports shutdown" {
     executor.deinit();
 }
 
+test "bounded Gravity Spindle lifecycle sequence fuzz preserves terminal reset invariants" {
+    var executor = try spindle.executor.WorkStealingExecutor.init(std.testing.allocator, .{ .workers = 2, .local_capacity = 16, .injection_capacity = 16, .urgent_capacity = 4 });
+    errdefer executor.deinit();
+    var slots: [4]spindle_adapter.Dispatcher.Slot = undefined;
+    var adapter = spindle_adapter.Dispatcher.init(&executor, &slots, 3);
+    var counts = [_]std.atomic.Value(u32){std.atomic.Value(u32).init(0)} ** 4;
+    var context = Context{ .counts = &counts };
+    var custom = adapter.custom();
+    const dispatcher = contract.Dispatcher{ .custom = &custom };
+    var seed: u64 = 0x255e_91ce;
+    for (0..2_000) |iteration| {
+        seed = seed *% 6_364_136_223_846_793_005 +% 1;
+        const count: u32 = @intCast(seed % 5);
+        context.fail_index = if ((seed >> 8) % 17 == 0 and count != 0) @intCast((seed >> 16) % count) else null;
+        const result = dispatcher.dispatch(.{ .context = &context, .job_count = count, .run = run });
+        if (count > 3) {
+            try std.testing.expectError(error.Backpressure, result);
+        } else if (context.fail_index != null) {
+            try std.testing.expectError(error.CallbackFailed, result);
+        } else try result;
+        for (slots[0..@min(count, 3)]) |slot| {
+            try std.testing.expect(slot.task.status() == .completed or slot.task.status() == .failed);
+            try std.testing.expectEqual(@as(u32, 0), slot.task.queue_references.load(.acquire));
+            try std.testing.expect(slot.generation <= @as(u64, @intCast(iteration + 1)));
+        }
+    }
+
+    const Noop = struct {
+        fn run(_: *spindle.executor.Task) void {}
+    };
+    var cancelled = spindle.executor.Task.init(Noop.run, null);
+    const stale = cancelled.handle();
+    try std.testing.expect(cancelled.tryQueue());
+    cancelled.retainQueueReference();
+    try std.testing.expect(cancelled.cancel());
+    cancelled.releaseQueueReference();
+    try cancelled.wait();
+    try cancelled.waitQueueReleased();
+    try cancelled.reset();
+    try std.testing.expect(!stale.isValid());
+
+    executor.shutdown(.drain);
+    try std.testing.expectError(error.Shutdown, dispatcher.dispatch(.{ .context = &context, .job_count = 1, .run = run }));
+    executor.deinit();
+}
+
 test "host adapter rejects duplicate and missing logical jobs" {
     const Host = struct {
         fn duplicate(_: ?*anyopaque, _: u32, run_job: host_adapter.RunFn, raw: ?*anyopaque) callconv(.c) u32 {

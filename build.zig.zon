@@ -17,6 +17,7 @@
         "third_party/spindle",
         "CONTRIBUTING.md",
         "LICENSE",
+        "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
     },
 }

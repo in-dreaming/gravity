@@ -216,12 +216,38 @@ pub fn build(b: *std.Build) void {
     fuzz.dependOn(&addZigTest(b, "fuzz-codec", target, optimize, metadata, "tests/fuzz/codec_fuzz.zig").step);
     fuzz.dependOn(&addZigTest(b, "fuzz-geometry", target, optimize, metadata, "tests/fuzz/geometry_fuzz.zig").step);
     fuzz.dependOn(&addZigTest(b, "fuzz-gjk", target, optimize, metadata, "tests/fuzz/gjk_fuzz.zig").step);
+    fuzz.dependOn(&addZigTest(b, "fuzz-mesh", target, optimize, metadata, "tests/fuzz/mesh_fuzz.zig").step);
+    fuzz.dependOn(&addZigTest(b, "fuzz-security", target, optimize, metadata, "tests/fuzz/security_fuzz.zig").step);
+    fuzz.dependOn(&addZigTest(b, "fuzz-state-machine", target, optimize, metadata, "tests/fuzz/state_machine_fuzz.zig").step);
+    const fuzz_all_modes = b.step("fuzz-all-modes", "Replay the complete bounded fuzz corpus in Debug, ReleaseSafe, and ReleaseFast");
+    inline for ([_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe, .ReleaseFast }) |mode| {
+        inline for ([_][]const u8{ "foundation_fuzz.zig", "fp_fuzz.zig", "core_fuzz.zig", "codec_fuzz.zig", "geometry_fuzz.zig", "gjk_fuzz.zig", "mesh_fuzz.zig", "security_fuzz.zig", "state_machine_fuzz.zig" }) |source| {
+            const name = source[0 .. source.len - 4];
+            fuzz_all_modes.dependOn(&addZigTest(b, b.fmt("{s}-{s}", .{ name, @tagName(mode) }), target, mode, metadata, b.fmt("tests/fuzz/{s}", .{source})).step);
+        }
+    }
+    const fuzz_minimize = b.step("fuzz-minimize", "Minimize a failing parser corpus while preserving its error class");
+    const fuzz_minimize_run = addToolRun(b, "fuzz_minimize", target, .ReleaseSafe, metadata);
+    if (b.args) |args| fuzz_minimize_run.addArgs(args);
+    fuzz_minimize.dependOn(&fuzz_minimize_run.step);
+    const fuzz_instrumented = b.step("fuzz-instrumented", "Build the Zig coverage-guided Task 25 parser harness");
+    const parser_fuzz_artifact = addFuzzArtifact(b, "fuzz-parser-instrumented", target, .ReleaseSafe, metadata, "tests/fuzz/parser_coverage_fuzz.zig");
+    fuzz_instrumented.dependOn(&b.addRunArtifact(parser_fuzz_artifact).step);
 
     const abi_test = b.step("abi-test", "Compile and run the C header compatibility test");
     abi_test.dependOn(&addAbiTest(b, target, optimize).step);
     abi_test.dependOn(&addZigTest(b, "abi-runtime", target, optimize, metadata, "tests/abi/abi_test.zig").step);
     abi_test.dependOn(&addAbiConsumer(b, "gravity-c11-consumer", "tests/abi/consumer.c", target, optimize, static_library).step);
     abi_test.dependOn(&addAbiConsumer(b, "gravity-cpp17-consumer", "tests/abi/consumer.cpp", target, optimize, static_library).step);
+    const security_gate = b.step("security-gate", "Run Task 25 fuzz, ABI and Spindle lifecycle security gates");
+    security_gate.dependOn(fuzz_all_modes);
+    security_gate.dependOn(spindle_all_modes);
+    security_gate.dependOn(abi_test);
+    security_gate.dependOn(jobs_tsan);
+    const security_audit_step = b.step("security-audit", "Audit Task 25 build graph, licenses and SBOM pinning");
+    const security_audit = addToolRun(b, "security_audit", target, .ReleaseSafe, metadata);
+    security_audit_step.dependOn(&security_audit.step);
+    security_gate.dependOn(security_audit_step);
 
     const abi_all_modes = b.step("test-abi-all-modes", "Run Task 22 ABI tests in Debug, ReleaseSafe, and ReleaseFast");
     inline for ([_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe, .ReleaseFast }) |mode| {
@@ -460,7 +486,7 @@ pub fn build(b: *std.Build) void {
     arm_validate.dependOn(&b.addInstallArtifact(arm_pipeline, .{ .dest_sub_path = "gravity-pipeline-aarch64" }).step);
 
     const tools_step = b.step("tools", "Build foundation command-line tools");
-    inline for ([_][]const u8{ "bake", "replay", "state_diff", "benchmark" }) |name| {
+    inline for ([_][]const u8{ "bake", "replay", "state_diff", "benchmark", "fuzz_minimize", "security_audit" }) |name| {
         const tool = addTool(b, name, target, optimize, metadata);
         tools_step.dependOn(&b.addInstallArtifact(tool, .{}).step);
     }
@@ -648,6 +674,23 @@ fn addZigTest(
 }
 
 fn addZigTestArtifact(
+    b: *std.Build,
+    name: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    metadata: *std.Build.Step.Options,
+    source: []const u8,
+) *std.Build.Step.Compile {
+    const test_module = b.createModule(.{
+        .root_source_file = b.path(source),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_module.addImport("gravity", addCoreModule(b, target, optimize, metadata));
+    return b.addTest(.{ .name = name, .root_module = test_module });
+}
+
+fn addFuzzArtifact(
     b: *std.Build,
     name: []const u8,
     target: std.Build.ResolvedTarget,

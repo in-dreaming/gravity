@@ -229,7 +229,56 @@ test "caller-memory ABI drives World query hash and snapshot transaction" {
     dispatcher.dispatch_batch = countingDispatch;
     try expectOk(abi.gravity_v1_world_set_dispatcher(world, &dispatcher));
     try expectOk(abi.gravity_v1_world_step(world, &command, 1));
-    try std.testing.expectEqual(@as(u32, 14), phase_batches);
+    // Task 24 partitions contact and row preparation into four additional
+    // stable batches; the host callback observes the complete fixed plan.
+    try std.testing.expectEqual(@as(u32, 18), phase_batches);
     try expectOk(abi.gravity_v1_world_tick(world, &tick_after));
     try std.testing.expectEqual(@as(u64, 2), tick_after);
+
+    // Task 25 bounded ABI mutation corpus: every descriptor remains inside
+    // controlled storage, while sizes, discriminants, reserved fields and
+    // scalar envelopes cover their hostile wire values.
+    var seed: u64 = 0x25ab_1f22;
+    for (0..1_000) |_| {
+        seed = seed *% 6_364_136_223_846_793_005 +% 1;
+        var mutated_command = command;
+        switch (seed % 5) {
+            0 => mutated_command.struct_size = @truncate(seed),
+            1 => mutated_command.reserved = @truncate(seed >> 32),
+            2 => mutated_command.type = @truncate(seed >> 8),
+            3 => mutated_command.dof_locks = @truncate(seed >> 16),
+            else => mutated_command.first.x = (@as(i64, @intCast(seed % 101)) - 50) * (@as(i64, 1) << 32),
+        }
+        try std.testing.expect(abi.gravity_v1_world_step(world, &mutated_command, 1) != abi.internal);
+
+        var mutated_query = point;
+        switch ((seed >> 7) % 6) {
+            0 => mutated_query.struct_size = @truncate(seed >> 3),
+            1 => mutated_query.reserved = @truncate(seed >> 35),
+            2 => mutated_query.mode = @truncate(seed >> 11),
+            3 => mutated_query.reserved1 = @truncate(seed >> 43),
+            4 => mutated_query.filter.reserved = @truncate(seed >> 27),
+            else => mutated_query.point.x = @bitCast(seed),
+        }
+        try std.testing.expect(abi.gravity_v1_world_query_point(world, &mutated_query, &hits, hits.len, &required) != abi.internal);
+    }
+
+    // Mutated snapshots either load completely or leave the canonical hash
+    // unchanged. Restore the valid baseline after every probe.
+    try expectOk(abi.gravity_v1_world_snapshot_save(world, snapshot_memory.ptr, snapshot_memory.len, &snapshot_required));
+    var mutation_baseline: abi.Hash128 = undefined;
+    try expectOk(abi.gravity_v1_world_hash(world, &mutation_baseline));
+    const mutation_length: usize = @intCast(snapshot_required);
+    for (0..@min(mutation_length, 1_024)) |iteration| {
+        const index = (iteration * 2_654_435_761) % mutation_length;
+        snapshot_memory[index] ^= @truncate((iteration % 255) + 1);
+        const result = abi.gravity_v1_world_snapshot_load(world, snapshot_memory.ptr, mutation_length);
+        if (result != abi.ok) {
+            var after_rejection: abi.Hash128 = undefined;
+            try expectOk(abi.gravity_v1_world_hash(world, &after_rejection));
+            try std.testing.expectEqualSlices(u8, &mutation_baseline.bytes, &after_rejection.bytes);
+        }
+        snapshot_memory[index] ^= @truncate((iteration % 255) + 1);
+        try expectOk(abi.gravity_v1_world_snapshot_load(world, snapshot_memory.ptr, mutation_length));
+    }
 }

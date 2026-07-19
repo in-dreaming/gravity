@@ -81,6 +81,9 @@ fn decimal(value: []const u8) bool {
         if (value.len == 1) return false;
         at = 1;
     }
+    // Match Fp.parseCanonicalDecimal exactly: the integer component is
+    // mandatory, so `.5` and `-.5` are not canonical source values.
+    if (value[at] < '0' or value[at] > '9') return false;
     var digits: usize = 0;
     var dot = false;
     while (at < value.len) : (at += 1) switch (value[at]) {

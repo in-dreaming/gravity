@@ -1,0 +1,41 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "gravity-task25-sbom",
+  "documentNamespace": "https://gravity.invalid/spdx/task25-2026-07-19",
+  "creationInfo": {
+    "created": "2026-07-19T12:00:00Z",
+    "creators": ["Tool: Gravity Task 25 security audit"]
+  },
+  "packages": [
+    {
+      "name": "Gravity",
+      "SPDXID": "SPDXRef-Package-Gravity",
+      "versionInfo": "0.1.0-dev",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) 2026 in dreaming"
+    },
+    {
+      "name": "Spindle",
+      "SPDXID": "SPDXRef-Package-Spindle",
+      "versionInfo": "6756fb2feecfa354a7ae42bca3af5d9bd66c7558",
+      "downloadLocation": "git+https://github.com/in-dreaming/spindle.git@6756fb2feecfa354a7ae42bca3af5d9bd66c7558",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) 2026 in dreaming"
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-Package-Gravity",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Spindle",
+      "comment": "Native executor-only adapter; no aggregate Runtime or optional persistence subsystem is linked."
+    }
+  ]
+}

@@ -221,7 +221,7 @@ fn mapError(err: anyerror) u32 {
         error.Reentrant => reentrant,
         error.Backpressure, error.Cancelled, error.WorkerFault, error.CallbackFailed, error.Shutdown => callback_error,
         error.Faulted => invalid_state,
-        error.InvalidMagic, error.InvalidProtocol, error.HeaderMismatch, error.InvalidData, error.InvalidSection, error.UnknownRequiredSection => corrupt_input,
+        error.InvalidMagic, error.InvalidProtocol, error.HeaderMismatch, error.InvalidData, error.InvalidSection, error.UnknownRequiredSection, error.EndOfInput, error.InvalidBool, error.InvalidEnum, error.InvalidSectionOrder, error.DuplicateSection, error.LengthOverflow, error.SectionTooLarge, error.TrailingBytes, error.InvalidVersion, error.InvalidOrder, error.InvalidPatch => corrupt_input,
         else => internal,
     };
 }
