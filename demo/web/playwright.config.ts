@@ -13,10 +13,10 @@ export default defineConfig({
     launchOptions: { args: ["--use-angle=swiftshader-webgl", "--enable-unsafe-swiftshader"] }
   },
   webServer: {
-    command: "zig build demo-run -j1",
+    command: "pnpm --dir demo/web run dev",
     cwd: "../..",
     port: 5173,
-    reuseExistingServer: true,
+    reuseExistingServer: false,
     timeout: 30_000
   }
 });
