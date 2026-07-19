@@ -335,6 +335,23 @@ pub fn solveRowsIterationForIsland(world: *body_world.World, rows: []constraints
     }
 }
 
+/// Indexed island variant used by the production partitioner. Indices are a
+/// stable subsequence of the canonical global row stream.
+pub fn warmStartRowsIndexed(world: *body_world.World, rows: []const constraints.ConstraintRow, indices: []const u32, status: *fp.MathStatus) void {
+    for (indices) |index| applyRowImpulse(world, rows[index], rows[index].accumulated_impulse, status);
+}
+
+pub fn solveRowsIterationIndexed(world: *body_world.World, rows: []constraints.ConstraintRow, indices: []const u32, status: *fp.MathStatus) void {
+    for (indices) |index| {
+        const row = &rows[index];
+        const velocity = rowVelocity(world, row.*, status);
+        const correction = velocity.add(row.bias, status).add(row.softness.mul(row.accumulated_impulse, status), status).neg(status).mul(row.effective_mass, status);
+        const old = row.accumulated_impulse;
+        row.accumulated_impulse = clamp(old.add(correction, status), row.lower, row.upper);
+        applyRowImpulse(world, row.*, row.accumulated_impulse.sub(old, status), status);
+    }
+}
+
 fn rowBelongsToIsland(world: *const body_world.World, row: constraints.ConstraintRow, members: []const ids.BodyId) bool {
     const a = world.bodyIndex(row.key.min_body) orelse return false;
     if (world.storage.body_type[a] == .dynamic) return containsBody(members, row.key.min_body);
@@ -343,8 +360,15 @@ fn rowBelongsToIsland(world: *const body_world.World, row: constraints.Constrain
 }
 
 fn containsBody(members: []const ids.BodyId, body: ids.BodyId) bool {
-    for (members) |member| if (member.value == body.value) return true;
-    return false;
+    // constraints.build emits each island's members in canonical id order.
+    // Binary lookup avoids multiplying every PGS row pass by island size.
+    var lower: usize = 0;
+    var upper = members.len;
+    while (lower < upper) {
+        const mid = lower + (upper - lower) / 2;
+        if (members[mid].value < body.value) lower = mid + 1 else upper = mid;
+    }
+    return lower < members.len and members[lower].value == body.value;
 }
 /// Builds all baseline and active control rows for one joint. `scratch` is
 /// caller-owned temporary storage and must hold twice the documented maximum

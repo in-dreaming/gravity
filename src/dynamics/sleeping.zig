@@ -57,6 +57,20 @@ pub fn wakeGraph(world: *world_mod.World, storage: Storage, edges: []const const
     }
     for (requests) |request| _ = world.bodyIndex(request.body) orelse return error.InvalidBody;
 
+    // The normal active-simulation path has no sleeping dynamic body. Once
+    // edge/request validation is complete, traversing the graph once per
+    // contact cannot discover a transition or event. This O(body) proof
+    // replaces the former O(requests * bodies * edges) no-op path without
+    // weakening malformed-input validation or partially-awake semantics.
+    var any_sleeping_dynamic = false;
+    for (world.storage.alive, 0..) |alive, index| {
+        if (alive and world.storage.body_type[index] == .dynamic and !storage.awake[index]) {
+            any_sleeping_dynamic = true;
+            break;
+        }
+    }
+    if (!any_sleeping_dynamic) return events[0..0];
+
     // First pass counts the exact, de-duplicated set.  This makes an event
     // capacity failure transactional even when several requests overlap.
     var marked: usize = 0;

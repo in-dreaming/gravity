@@ -34,6 +34,26 @@ test "contact cache merges sorted patches and preserves matching impulses" {
     try std.testing.expectEqual(cache.EventKind.end, end.events[0].kind);
 }
 
+test "persistent contacts require only live patch capacity" {
+    var status = fp.MathStatus{};
+    var storage: [5]cache.Patch = undefined;
+    var state = cache.Cache{ .patches = &storage };
+    var next: [5]cache.Patch = undefined;
+    var events: [5]cache.Event = undefined;
+    const contacts = [_]cache.Patch{
+        patch(key(1, 2), false),
+        patch(key(3, 4), false),
+        patch(key(5, 6), false),
+        patch(key(7, 8), false),
+        patch(key(9, 10), false),
+    };
+    _ = try cache.merge(&state, &contacts, .{ .next = &next, .events = &events }, fp.Fp.zero, &status);
+    const persisted = try cache.merge(&state, &contacts, .{ .next = &next, .events = &events }, fp.Fp.zero, &status);
+    try std.testing.expectEqual(@as(usize, contacts.len), state.len);
+    try std.testing.expectEqual(@as(usize, contacts.len), persisted.events.len);
+    for (persisted.events) |event| try std.testing.expectEqual(cache.EventKind.persist, event.kind);
+}
+
 test "contact cache clears revision changes and emits sensor transitions transactionally" {
     var status = fp.MathStatus{};
     var storage: [2]cache.Patch = undefined;

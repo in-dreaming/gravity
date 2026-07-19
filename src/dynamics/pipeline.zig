@@ -49,11 +49,27 @@ pub const Diagnostics = struct {
         return self.phase_count[@intFromEnum(phase)];
     }
 };
+/// Optional derived phase-boundary observer. Core never reads a host clock;
+/// profiling tools may timestamp these deterministic transitions externally.
+/// `next == null` closes the final phase of a Tick.
+pub const ProfileDetail = enum { solve_contacts, solve_wake, solve_joints, solve_validate, solve_clear, solve_pgs };
+pub const PhaseObserver = struct {
+    context: *anyopaque,
+    transition_fn: *const fn (*anyopaque, ?Phase) void,
+    detail_fn: ?*const fn (*anyopaque, ProfileDetail) void = null,
+    pub fn transition(self: *const PhaseObserver, next: ?Phase) void {
+        self.transition_fn(self.context, next);
+    }
+    pub fn detail(self: *const PhaseObserver, value: ProfileDetail) void {
+        if (self.detail_fn) |call| call(self.context, value);
+    }
+};
 pub const Workspace = struct {
     commands: []world_mod.Command,
     trace: []Phase,
     trace_len: usize = 0,
     diagnostics: ?*Diagnostics = null,
+    observer: ?*const PhaseObserver = null,
     /// Synchronous executor seam. The default serial backend is the golden
     /// oracle; native/host adapters borrow each phase context until barrier.
     dispatcher: jobs.Dispatcher = .{ .serial = {} },
@@ -228,11 +244,21 @@ pub const AnalyticSolverWorkspace = struct {
     points: []contact_solver.Point,
     restitution_bias: []fp.Fp,
     pseudo: contact_solver.PseudoVelocities,
+    partition: ?SolverPartitionWorkspace = null,
     /// Required only when cache patches originate from Task 10 convex/compound
     /// narrowing. The old primitive path remains allocation-free and does not
     /// touch this workspace.
     manifold: ?gjk.ManifoldWorkspace = null,
     surface: ?SurfaceNarrowWorkspace = null,
+};
+pub const SolverPartitionWorkspace = struct {
+    body_island: []u32,
+    contact_indices: []u32,
+    row_indices: []u32,
+    contact_offsets: []u32,
+    row_offsets: []u32,
+    contact_cursor: []u32,
+    row_cursor: []u32,
 };
 /// Additional caller-owned storage for a full analytic contact/solver tick.
 /// `previous` snapshots cache state before any substep; it is used only to
@@ -1279,6 +1305,7 @@ pub fn buildAnalyticSolverContacts(world: *const world_mod.World, assets: *const
         }
         for (workspace.restitution_bias[points_start .. points_start + point_len]) |*bias| bias.* = .zero;
         workspace.contacts[contact_count] = .{ .body_a = a.collider.body, .body_b = b.collider.body, .friction_a = a.collider.material.friction, .friction_b = b.collider.material.friction, .restitution_a = a.collider.material.restitution, .restitution_b = b.collider.material.restitution, .points = workspace.points[points_start .. points_start + point_len], .restitution_bias = workspace.restitution_bias[points_start .. points_start + point_len], .patch = patch };
+        try contact_solver.prepareContact(world, &workspace.contacts[contact_count], workspace.points[points_start .. points_start + point_len], status);
         contact_count += 1;
         point_count += point_len;
     }
@@ -1327,6 +1354,62 @@ pub fn buildAnalyticIslands(world: *const world_mod.World, cache: *const contact
     };
     workspace.edge_len = count;
     return constraints.build(world, workspace.edges[0..count], workspace.edge_scratch, workspace.islands, workspace.members, workspace.lock_rows, status);
+}
+
+fn buildSolverPartition(world: *const world_mod.World, islands: []const constraints.Island, members: []const @import("../core/ids.zig").BodyId, contacts: []const contact_solver.Contact, rows: []const constraints.ConstraintRow, partition: *SolverPartitionWorkspace) Error!void {
+    const sentinel = std.math.maxInt(u32);
+    if (partition.body_island.len < world.storage.alive.len or partition.contact_indices.len < contacts.len or partition.row_indices.len < rows.len or partition.contact_offsets.len < islands.len + 1 or partition.row_offsets.len < islands.len + 1 or partition.contact_cursor.len < islands.len or partition.row_cursor.len < islands.len) return error.CapacityExceeded;
+    @memset(partition.body_island[0..world.storage.alive.len], sentinel);
+    for (islands, 0..) |island, island_index| {
+        const first: usize = island.first_member;
+        const count: usize = island.member_count;
+        if (first + count > members.len) return error.CapacityExceeded;
+        for (members[first .. first + count]) |body| partition.body_island[world.bodyIndex(body) orelse return error.InvalidBody] = @intCast(island_index);
+    }
+    const contact_offsets = partition.contact_offsets[0 .. islands.len + 1];
+    const row_offsets = partition.row_offsets[0 .. islands.len + 1];
+    @memset(contact_offsets, 0);
+    @memset(row_offsets, 0);
+    for (contacts) |contact| {
+        const a = world.bodyIndex(contact.body_a) orelse return error.InvalidBody;
+        const b = world.bodyIndex(contact.body_b) orelse return error.InvalidBody;
+        const dynamic = if (world.storage.body_type[a] == .dynamic) a else if (world.storage.body_type[b] == .dynamic) b else return error.InvalidContact;
+        const island = partition.body_island[dynamic];
+        if (island == sentinel) return error.InvalidContact;
+        contact_offsets[@as(usize, island) + 1] += 1;
+    }
+    for (rows) |row| {
+        const a = world.bodyIndex(row.key.min_body) orelse return error.InvalidBody;
+        const b = world.bodyIndex(row.key.max_body) orelse return error.InvalidBody;
+        const dynamic = if (world.storage.body_type[a] == .dynamic) a else if (world.storage.body_type[b] == .dynamic) b else return error.InvalidContact;
+        const island = partition.body_island[dynamic];
+        if (island == sentinel) return error.InvalidContact;
+        row_offsets[@as(usize, island) + 1] += 1;
+    }
+    for (0..islands.len) |index| {
+        contact_offsets[index + 1] += contact_offsets[index];
+        row_offsets[index + 1] += row_offsets[index];
+        partition.contact_cursor[index] = contact_offsets[index];
+        partition.row_cursor[index] = row_offsets[index];
+    }
+    for (contacts, 0..) |contact, contact_index| {
+        const a = world.bodyIndex(contact.body_a).?;
+        const b = world.bodyIndex(contact.body_b).?;
+        const dynamic = if (world.storage.body_type[a] == .dynamic) a else b;
+        const island = partition.body_island[dynamic];
+        const destination = partition.contact_cursor[island];
+        partition.contact_indices[destination] = @intCast(contact_index);
+        partition.contact_cursor[island] += 1;
+    }
+    for (rows, 0..) |row, row_index| {
+        const a = world.bodyIndex(row.key.min_body).?;
+        const b = world.bodyIndex(row.key.max_body).?;
+        const dynamic = if (world.storage.body_type[a] == .dynamic) a else b;
+        const island = partition.body_island[dynamic];
+        const destination = partition.row_cursor[island];
+        partition.row_indices[destination] = @intCast(row_index);
+        partition.row_cursor[island] += 1;
+    }
 }
 
 /// Executes the command/integration prefix of the frozen pipeline.  All
@@ -1511,23 +1594,29 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
             solver_contacts: []const contact_solver.Contact = &.{},
             joint_rows: []constraints.ConstraintRow = &.{},
             fn run(self: *@This()) Error!void {
+                if (self.workspace.observer) |observer| observer.detail(.solve_contacts);
                 self.solver_contacts = buildAnalyticSolverContacts(self.world, self.contacts.broadphase.assets, self.contacts.cache, self.pipeline_workspace.solver, self.status) catch |err| return switch (err) {
                     error.CapacityExceeded, error.OutOfScratch, error.OutOfSpace => error.CapacityExceeded,
                     else => error.ContactFailure,
                 };
+                if (self.workspace.observer) |observer| observer.detail(.solve_wake);
                 if (self.pipeline_workspace.sleep) |sleep| {
                     try wakeContacts(self.world, sleep, self.pipeline_workspace.islands.edges[0..self.pipeline_workspace.islands.edge_len], self.solver_contacts);
                     if (self.pipeline_workspace.joint) |joint| _ = try sleeping.wakeActiveJoints(self.world, sleep.storage, self.pipeline_workspace.islands.edges[0..self.pipeline_workspace.islands.edge_len], joint.pool, sleep.requests, sleep.graph_scratch, sleep.wake_events);
                 }
+                if (self.workspace.observer) |observer| observer.detail(.solve_joints);
                 self.joint_rows = if (self.pipeline_workspace.joint) |joint| blk: {
                     const built = try joints.buildPoolRows(self.world, joint.pool, self.dt, joint.rows, joint.scratch, self.status);
                     break :blk joint.rows[0..built.len];
                 } else &.{};
+                if (self.workspace.observer) |observer| observer.detail(.solve_validate);
                 try contact_solver.validateInputs(self.world, self.solver_contacts, self.pipeline_workspace.solver.pseudo);
                 try joints.validateRows(self.world, self.joint_rows);
+                if (self.pipeline_workspace.solver.partition) |*partition| try buildSolverPartition(self.world, self.islands, self.members, self.solver_contacts, self.joint_rows, partition);
                 // Static/kinematic pseudo slots are read while evaluating a
                 // dynamic island even though they are never written by it.
                 // Clear the complete read set once before workers start.
+                if (self.workspace.observer) |observer| observer.detail(.solve_clear);
                 @memset(self.pipeline_workspace.solver.pseudo.linear, geometry.Vec3.zero);
                 @memset(self.pipeline_workspace.solver.pseudo.angular, geometry.Vec3.zero);
                 const IslandSolve = struct {
@@ -1536,6 +1625,7 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
                     members: []const @import("../core/ids.zig").BodyId,
                     joint_rows: []constraints.ConstraintRow,
                     contacts: []const contact_solver.Contact,
+                    partition: ?*SolverPartitionWorkspace,
                     pseudo: contact_solver.PseudoVelocities,
                     settings: contact_solver.Settings,
                     fn run(value: *@This(), range: jobs.Range, job_status: *fp.MathStatus) Error!void {
@@ -1544,11 +1634,18 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
                             const island = value.islands[index];
                             const first: usize = island.first_member;
                             const count: usize = island.member_count;
-                            contact_solver.solveIslandWithJointRows(value.world, value.members[first .. first + count], value.joint_rows, value.contacts, value.pseudo, value.settings, job_status);
+                            if (value.partition) |partition| {
+                                const contact_first: usize = partition.contact_offsets[index];
+                                const contact_end: usize = partition.contact_offsets[index + 1];
+                                const row_first: usize = partition.row_offsets[index];
+                                const row_end: usize = partition.row_offsets[index + 1];
+                                contact_solver.solveIslandIndexed(value.world, value.members[first .. first + count], value.joint_rows, partition.row_indices[row_first..row_end], value.contacts, partition.contact_indices[contact_first..contact_end], value.pseudo, value.settings, job_status);
+                            } else contact_solver.solveIslandWithJointRows(value.world, value.members[first .. first + count], value.joint_rows, value.contacts, value.pseudo, value.settings, job_status);
                         }
                     }
                 };
-                var island_solve = IslandSolve{ .world = self.world, .islands = self.islands, .members = self.members, .joint_rows = self.joint_rows, .contacts = self.solver_contacts, .pseudo = self.pipeline_workspace.solver.pseudo, .settings = solverSettings(self.simulation) };
+                var island_solve = IslandSolve{ .world = self.world, .islands = self.islands, .members = self.members, .joint_rows = self.joint_rows, .contacts = self.solver_contacts, .partition = if (self.pipeline_workspace.solver.partition) |*partition| partition else null, .pseudo = self.pipeline_workspace.solver.pseudo, .settings = solverSettings(self.simulation) };
+                if (self.workspace.observer) |observer| observer.detail(.solve_pgs);
                 try dispatchRangesGrain(self.workspace, self.islands.len, 1, &island_solve, self.status, IslandSolve.run);
             }
         };
@@ -1638,7 +1735,8 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
     try checkMath(state, .events, status);
     world.finishTick();
     push(workspace, .hash);
-    var result = finish(state, workspace);
+    state.tick += 1;
+    var result = Result{ .tick = state.tick, .trace = workspace.trace[0..workspace.trace_len], .diagnostics = if (workspace.diagnostics) |diagnostics| diagnostics.* else null };
     const Hash = struct {
         world: *world_mod.World,
         state: *State,
@@ -1657,6 +1755,7 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
     };
     var hash_phase = Hash{ .world = world, .state = state, .simulation = simulation, .contacts = contacts, .pipeline_workspace = pipeline_workspace, .output = &result.state_hash };
     try dispatchWork(workspace, &hash_phase, Hash.run);
+    if (workspace.observer) |observer| observer.transition(null);
     return .{ .step = result, .events = events.events };
 }
 
@@ -1762,6 +1861,7 @@ fn recordFaultErrorFor(state: *State, phase: Phase, err: anyerror, math_fault: f
     state.fault = .{ .tick = state.tick, .phase = phase, .object = object, .code = faultCode(err), .detail = faultDetail(err), .math_fault = math_fault };
 }
 fn finish(state: *State, workspace: *Workspace) Result {
+    if (workspace.observer) |observer| observer.transition(null);
     state.tick += 1;
     return .{ .tick = state.tick, .trace = workspace.trace[0..workspace.trace_len], .diagnostics = if (workspace.diagnostics) |diagnostics| diagnostics.* else null };
 }
@@ -1806,6 +1906,7 @@ fn solverSettings(simulation: config.SimulationConfig) contact_solver.Settings {
     return .{ .velocity_iterations = @intCast(simulation.iterations.velocity), .position_iterations = @intCast(simulation.iterations.position), .restitution_threshold = simulation.tolerances.restitution_threshold, .max_position_correction = simulation.tolerances.max_position_correction };
 }
 fn push(workspace: *Workspace, phase: Phase) void {
+    if (workspace.observer) |observer| observer.transition(phase);
     workspace.trace[workspace.trace_len] = phase;
     workspace.trace_len += 1;
     if (workspace.diagnostics) |diagnostics| diagnostics.phase_count[@intFromEnum(phase)] += 1;

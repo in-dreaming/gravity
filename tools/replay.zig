@@ -142,7 +142,7 @@ fn surfaceCastWorkspace(allocator: std.mem.Allocator, b: AssetBounds, leaves: us
 
 /// Tool-owned storage.  It is created once before `replay.run`; no member is
 /// allocated or resized while `FullWorldHost.step` is executing.
-const Host = struct {
+pub const Host = struct {
     allocator: std.mem.Allocator,
     header: snapshot.Header,
     assets: *const asset_store.Store,
@@ -165,7 +165,7 @@ const Host = struct {
     base: replay.IntegrationOnlyHost = undefined,
     full: replay.FullWorldHost = undefined,
 
-    fn init(allocator: std.mem.Allocator, header: snapshot.Header, assets: *const asset_store.Store) !*Host {
+    pub fn init(allocator: std.mem.Allocator, header: snapshot.Header, assets: *const asset_store.Store) !*Host {
         const c = header.configuration.capacities;
         const body_count: usize = c.body;
         const collider_count: usize = c.collider;
@@ -215,7 +215,7 @@ const Host = struct {
         contact_workspace.* = .{ .broadphase = broad, .narrow = try allocator.alloc(contact_cache.Patch, patch_count), .convex = convex_workspace, .surface = surface_workspace, .cache = contacts, .cache_next = try allocator.alloc(contact_cache.Patch, patch_count), .events = try allocator.alloc(contact_cache.Event, event_count) };
 
         const solver = try allocator.create(pipeline.AnalyticSolverWorkspace);
-        solver.* = .{ .contacts = try allocator.alloc(contact_solver.Contact, patch_count), .points = try allocator.alloc(contact_solver.Point, point_count), .restitution_bias = try allocator.alloc(fp.Fp, point_count), .pseudo = .{ .linear = try allocator.alloc(geometry.Vec3, body_count), .angular = try allocator.alloc(geometry.Vec3, body_count) }, .manifold = try manifoldWorkspace(allocator, hull_vertices, epa_faces, point_count), .surface = surface_workspace.* };
+        solver.* = .{ .contacts = try allocator.alloc(contact_solver.Contact, patch_count), .points = try allocator.alloc(contact_solver.Point, point_count), .restitution_bias = try allocator.alloc(fp.Fp, point_count), .pseudo = .{ .linear = try allocator.alloc(geometry.Vec3, body_count), .angular = try allocator.alloc(geometry.Vec3, body_count) }, .partition = .{ .body_island = try allocator.alloc(u32, body_count), .contact_indices = try allocator.alloc(u32, patch_count), .row_indices = try allocator.alloc(u32, joint_count * 12), .contact_offsets = try allocator.alloc(u32, body_count + 1), .row_offsets = try allocator.alloc(u32, body_count + 1), .contact_cursor = try allocator.alloc(u32, body_count), .row_cursor = try allocator.alloc(u32, body_count) }, .manifold = try manifoldWorkspace(allocator, hull_vertices, epa_faces, point_count), .surface = surface_workspace.* };
         const islands = try allocator.create(pipeline.IslandWorkspace);
         islands.* = .{ .edges = try allocator.alloc(constraints.Edge, patch_count + joint_count + body_count * 6), .edge_scratch = try allocator.alloc(constraints.Edge, patch_count + joint_count + body_count * 6), .islands = try allocator.alloc(constraints.Island, body_count), .members = try allocator.alloc(gravity.core.ids.BodyId, body_count), .lock_rows = try allocator.alloc(constraints.ConstraintRow, body_count * 6) };
         const joint_workspace = try allocator.create(pipeline.JointWorkspace);
@@ -240,7 +240,7 @@ const Host = struct {
         return result;
     }
 
-    fn deinit(self: *Host) void {
+    pub fn deinit(self: *Host) void {
         // The CLI allocator owns the process-lifetime workspace.  Releasing
         // each nested slice is unnecessary at process exit and would obscure
         // the single ownership rule used by the simulation itself.

@@ -188,8 +188,31 @@ fn visitPath(path: shapes.ChildPath, visitor: anytype) void {
 /// fault neither cache nor event buffer is published.
 pub fn merge(cache: *Cache, incoming: []const Patch, workspace: MergeWorkspace, warm_normal_cos_min: fp.Fp, status: *fp.MathStatus) Error!MergeResult {
     if (!patchesOrdered(cache.active()) or !patchesOrdered(incoming)) return error.InvalidOrder;
-    const worst: usize = cache.len + incoming.len;
-    if (worst > workspace.next.len or worst > cache.patches.len or worst > workspace.events.len) return error.CapacityExceeded;
+    // Preflight the exact union and event counts. Using old+incoming for every
+    // buffer incorrectly required 2x patch storage when all contacts persist,
+    // even though the canonical merge emits one patch per matching key.
+    var pre_old: usize = 0;
+    var pre_new: usize = 0;
+    var required_patches: usize = 0;
+    var required_events: usize = 0;
+    while (pre_old < cache.len or pre_new < incoming.len) {
+        const take_old = pre_new == incoming.len or (pre_old < cache.len and keyLess(cache.patches[pre_old].key, incoming[pre_new].key));
+        const take_new = pre_old == cache.len or (pre_new < incoming.len and keyLess(incoming[pre_new].key, cache.patches[pre_old].key));
+        if (take_old) {
+            pre_old += 1;
+            required_events += 1;
+        } else if (take_new) {
+            pre_new += 1;
+            required_patches += 1;
+            required_events += 1;
+        } else {
+            required_patches += 1;
+            required_events += if (cache.patches[pre_old].sensor == incoming[pre_new].sensor) 1 else 2;
+            pre_old += 1;
+            pre_new += 1;
+        }
+    }
+    if (required_patches > workspace.next.len or required_patches > cache.patches.len or required_events > workspace.events.len) return error.CapacityExceeded;
     var old_i: usize = 0;
     var new_i: usize = 0;
     var count: usize = 0;

@@ -248,6 +248,44 @@ pub fn build(b: *std.Build) void {
     const benchmark = b.step("benchmark", "Run the foundation metadata benchmark");
     benchmark.dependOn(&addToolRun(b, "benchmark", target, optimize, metadata).step);
 
+    const performance_small = b.step("performance-small", "Run the frozen Task 24 Small product benchmark");
+    const small_run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
+    small_run.addArgs(&.{ "Small", "8", "2", "0" });
+    performance_small.dependOn(&small_run.step);
+    const performance_medium = b.step("performance-medium", "Run the frozen Task 24 Medium product benchmark");
+    const medium_run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
+    medium_run.addArgs(&.{ "Medium", "8", "2", "0" });
+    performance_medium.dependOn(&medium_run.step);
+    const performance_medium_spindle = b.step("performance-medium-spindle", "Run Task 24 Medium with Spindle 8-worker hash validation");
+    const medium_spindle_run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
+    medium_spindle_run.addArgs(&.{ "Medium", "8", "2", "8" });
+    performance_medium_spindle.dependOn(&medium_spindle_run.step);
+    inline for ([_]struct { step: []const u8, scene: []const u8 }{ .{ .step = "performance-stress", .scene = "Stress" }, .{ .step = "performance-mesh-heavy", .scene = "MeshHeavy" }, .{ .step = "performance-joint-heavy", .scene = "JointHeavy" }, .{ .step = "performance-ccd", .scene = "CCD" } }) |entry| {
+        const single = b.step(entry.step, b.fmt("Run the frozen Task 24 {s} product benchmark", .{entry.scene}));
+        const run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
+        run.addArgs(&.{ entry.scene, "2", "1", "0" });
+        single.dependOn(&run.step);
+    }
+
+    const performance_corpus = b.step("performance-corpus", "Run all six frozen Task 24 product benchmark scenes");
+    var prior_performance_run: ?*std.Build.Step = null;
+    inline for ([_][]const u8{ "Small", "Medium", "Stress", "MeshHeavy", "JointHeavy", "CCD" }) |scene| {
+        const run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
+        run.addArgs(&.{ scene, "4", "1", "0" });
+        if (prior_performance_run) |prior| run.step.dependOn(prior);
+        prior_performance_run = &run.step;
+    }
+    performance_corpus.dependOn(prior_performance_run.?);
+    const performance_gate = b.step("performance-gate", "Enforce Task 24 product budgets on a fixed reference runner");
+    var prior_gate_run: ?*std.Build.Step = null;
+    inline for ([_][]const u8{ "Small", "Medium", "Stress", "MeshHeavy", "JointHeavy", "CCD" }) |scene| {
+        const run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
+        run.addArgs(&.{ scene, "64", "8", "8", "gate" });
+        if (prior_gate_run) |prior| run.step.dependOn(prior);
+        prior_gate_run = &run.step;
+    }
+    performance_gate.dependOn(prior_gate_run.?);
+
     const wasm_validate = b.step("wasm-validate", "Run WASI golden vectors and benchmark with wasmtime");
     const wasm_golden = addZigTestArtifact(b, "golden-fp-wasi", wasi_target, .ReleaseSafe, metadata, "tests/golden/fp_golden.zig");
     const wasm_golden_run = b.addSystemCommand(&.{ "wasmtime", "run" });
@@ -658,4 +696,29 @@ fn addToolRun(
     metadata: *std.Build.Step.Options,
 ) *std.Build.Step.Run {
     return b.addRunArtifact(addTool(b, name, target, optimize, metadata));
+}
+
+fn addTask24Benchmark(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    metadata: *std.Build.Step.Options,
+) *std.Build.Step.Run {
+    const jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/dispatcher.zig"), .target = target, .optimize = optimize });
+    const spindle = addSpindleModule(b, target, optimize);
+    const spindle_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/spindle_dispatcher.zig"), .target = target, .optimize = optimize });
+    spindle_jobs.addImport("gravity_jobs", jobs);
+    spindle_jobs.addImport("spindle_executor", spindle);
+    const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
+    host_jobs.addImport("gravity_jobs", jobs);
+    const gravity = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+    gravity.addImport("build_options", metadata.createModule());
+    gravity.addImport("gravity_jobs", jobs);
+    gravity.addImport("gravity_host_jobs", host_jobs);
+    const module = b.createModule(.{ .root_source_file = b.path("tools/task24_benchmark.zig"), .target = target, .optimize = optimize });
+    module.addImport("gravity", gravity);
+    module.addImport("gravity_jobs", jobs);
+    module.addImport("gravity_spindle_jobs", spindle_jobs);
+    module.addImport("spindle_executor", spindle);
+    return b.addRunArtifact(b.addExecutable(.{ .name = "gravity-task24-benchmark", .root_module = module }));
 }
