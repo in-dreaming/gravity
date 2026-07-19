@@ -1,0 +1,16 @@
+tick;prevalidate 1250200
+tick;commit 19700
+tick;integrate 577900
+tick;broadphase 3495300
+tick;narrowphase 5507100
+tick;islands 854800
+tick;solve;contact_prepare 19670700
+tick;solve;wake 184800
+tick;solve;joint_rows 1845000
+tick;solve;validate 530500
+tick;solve;clear 31700
+tick;solve;pgs 11844100
+tick;ccd 2519600
+tick;sleep 677200
+tick;events 949500
+tick;hash 4208400
