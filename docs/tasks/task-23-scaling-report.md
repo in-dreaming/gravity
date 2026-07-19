@@ -1,0 +1,51 @@
+# Task 23 deterministic job scaling report
+
+## Reproduction
+
+```powershell
+zig build job-scaling
+```
+
+The harness creates one canonical World snapshot per scene, warms every
+backend for 12 ticks, restores the snapshot, and measures 120 complete C ABI
+ticks. The serial result is the oracle. Spindle 1/2/4/8 workers must end with
+the exact same `gravity_v1_world_hash`; a mismatch fails the run instead of
+publishing timing data. Tick timing includes the C ABI rollback snapshot,
+physics phases, stable merges, and dispatcher barriers.
+
+## Reference run
+
+- Revision: `959e0b3` plus the report-only cleanup that removed progress text.
+- Date: 2026-07-19.
+- CPU: Intel Core i9-14900K, 24 cores / 32 logical processors.
+- OS: Windows 11 Pro 10.0.22631.
+- Zig: 0.16.0, `ReleaseFast`, baseline CPU target.
+- Power mode and CPU affinity were not pinned, so these values establish
+  functional scaling evidence rather than Task 24 regression thresholds.
+
+| Scene | Dynamic bodies | Backend workers | ns/tick | Speedup vs serial |
+|---|---:|---:|---:|---:|
+| Medium | 2,048 | serial | 4,541,045 | 1.000x |
+| Medium | 2,048 | 1 | 4,545,816 | 0.999x |
+| Medium | 2,048 | 2 | 3,509,871 | 1.294x |
+| Medium | 2,048 | 4 | 3,485,363 | 1.303x |
+| Medium | 2,048 | 8 | 3,700,075 | 1.227x |
+| Stress | 16,384 | serial | 119,178,949 | 1.000x |
+| Stress | 16,384 | 1 | 150,978,820 | 0.789x |
+| Stress | 16,384 | 2 | 131,428,921 | 0.907x |
+| Stress | 16,384 | 4 | 114,508,522 | 1.041x |
+| Stress | 16,384 | 8 | 113,442,990 | 1.051x |
+
+## Interpretation and boundary
+
+This run demonstrates real multi-worker acceleration without changing the
+state hash: Medium peaks at 1.303x and Stress at 1.051x. One-worker overhead
+is visible and is not hidden by substituting another executor. Stress scaling
+is limited because each public C ABI tick first serializes the full rollback
+snapshot; at 16,384 bodies that serial boundary dominates the parallel
+integration ranges.
+
+These two allocation-free scenes isolate Task 23 range ownership and executor
+cost. They are not the frozen Task 24 product benchmark corpus: contacts,
+joints, MeshHeavy, CCD, percentile sampling, affinity, power mode, and CI noise
+bands remain owned by Task 24.

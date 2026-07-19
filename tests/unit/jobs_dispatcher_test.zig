@@ -180,18 +180,23 @@ test "host adapter rejects duplicate and missing logical jobs" {
 
 const SpindleHost = struct {
     adapter: *spindle_adapter.Dispatcher,
+    delay_seed: u64 = 0,
 
     fn dispatch(user: ?*anyopaque, job_count: u32, run_job: abi.RunJobFn, batch_context: ?*anyopaque) callconv(.c) u32 {
         const self: *SpindleHost = @ptrCast(@alignCast(user orelse return abi.invalid_argument));
-        var bridge = Bridge{ .run_job = run_job, .batch_context = batch_context };
+        var bridge = Bridge{ .run_job = run_job, .batch_context = batch_context, .delay_seed = self.delay_seed };
         self.adapter.dispatch(.{ .context = &bridge, .job_count = job_count, .run = Bridge.run }) catch return abi.callback_error;
         return abi.ok;
     }
     const Bridge = struct {
         run_job: abi.RunJobFn,
         batch_context: ?*anyopaque,
+        delay_seed: u64 = 0,
         fn run(raw: *anyopaque, index: u32) !void {
             const self: *Bridge = @ptrCast(@alignCast(raw));
+            var mixed = self.delay_seed ^ (@as(u64, index) *% 0x9e37_79b9_7f4a_7c15);
+            mixed ^= mixed >> 30;
+            for (0..@as(usize, @intCast(mixed & 0xff))) |_| std.atomic.spinLoopHint();
             if (self.run_job(self.batch_context, index) != abi.ok) return error.CallbackFailed;
         }
     };
@@ -376,7 +381,7 @@ test "production multi-range ABI pipeline hash matches serial across Spindle wor
         errdefer executor.deinit();
         var slots: [64]spindle_adapter.Dispatcher.Slot = undefined;
         var adapter = spindle_adapter.Dispatcher.init(&executor, &slots, 64);
-        var host = SpindleHost{ .adapter = &adapter };
+        var host = SpindleHost{ .adapter = &adapter, .delay_seed = 0xd1b5_4a32_d192_ed03 ^ workers };
         var dispatcher = abi.Dispatcher{ .struct_size = @sizeOf(abi.Dispatcher), .reserved = 0, .user = &host, .dispatch_batch = SpindleHost.dispatch };
         try expectAbi(abi.gravity_v1_world_set_dispatcher(world, &dispatcher));
         for (golden) |expected| {
@@ -385,6 +390,27 @@ test "production multi-range ABI pipeline hash matches serial across Spindle wor
             try expectAbi(abi.gravity_v1_world_hash(world, &actual));
             try std.testing.expectEqualSlices(u8, &expected.bytes, &actual.bytes);
         }
+        try expectAbi(abi.gravity_v1_world_set_dispatcher(world, null));
+        executor.shutdown(.drain);
+        executor.deinit();
+    }
+
+    // A rollback may resume on a different worker count every Tick. The
+    // canonical replay hashes must remain identical across those backend
+    // switches rather than only across one fixed executor lifetime.
+    try expectAbi(abi.gravity_v1_world_snapshot_load(world, snapshot.ptr, snapshot.len));
+    for ([_]usize{ 1, 8, 2, 4 }, golden) |workers, expected| {
+        var executor = try spindle.executor.WorkStealingExecutor.init(allocator, .{ .workers = workers, .local_capacity = 64, .injection_capacity = 128, .urgent_capacity = 16 });
+        errdefer executor.deinit();
+        var slots: [64]spindle_adapter.Dispatcher.Slot = undefined;
+        var adapter = spindle_adapter.Dispatcher.init(&executor, &slots, 64);
+        var host = SpindleHost{ .adapter = &adapter, .delay_seed = 0x94d0_49bb_1331_11eb ^ workers };
+        var dispatcher = abi.Dispatcher{ .struct_size = @sizeOf(abi.Dispatcher), .reserved = 0, .user = &host, .dispatch_batch = SpindleHost.dispatch };
+        try expectAbi(abi.gravity_v1_world_set_dispatcher(world, &dispatcher));
+        try expectAbi(abi.gravity_v1_world_step(world, null, 0));
+        var actual: abi.Hash128 = undefined;
+        try expectAbi(abi.gravity_v1_world_hash(world, &actual));
+        try std.testing.expectEqualSlices(u8, &expected.bytes, &actual.bytes);
         try expectAbi(abi.gravity_v1_world_set_dispatcher(world, null));
         executor.shutdown(.drain);
         executor.deinit();

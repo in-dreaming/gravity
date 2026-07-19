@@ -130,6 +130,10 @@ pub fn build(b: *std.Build) void {
     all_modes.dependOn(spindle_all_modes);
     const job_scaling = b.step("job-scaling", "Measure Task 23 serial and Spindle 1/2/4/8 World scaling with hash validation");
     job_scaling.dependOn(&addJobScaling(b, target, .ReleaseFast, metadata, addSpindleModule(b, target, .ReleaseFast)).step);
+    const jobs_tsan = b.step("jobs-tsan", "Build, and on Linux run, the Task 23 dispatcher suite with ThreadSanitizer");
+    const tsan_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu, .cpu_model = .baseline });
+    const tsan_test = addJobsTsanTest(b, tsan_target, metadata);
+    if (builtin.os.tag == .linux) jobs_tsan.dependOn(&b.addRunArtifact(tsan_test).step) else jobs_tsan.dependOn(&tsan_test.step);
     inline for ([_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe, .ReleaseFast }) |mode| {
         spindle_all_modes.dependOn(&addSpindleTest(b, b.fmt("spindle-integration-{s}", .{@tagName(mode)}), target, mode, addSpindleModule(b, target, mode)).step);
         spindle_all_modes.dependOn(&addJobsTest(b, b.fmt("jobs-dispatcher-{s}", .{@tagName(mode)}), target, mode, metadata, addSpindleModule(b, target, mode)).step);
@@ -542,6 +546,28 @@ fn addJobScaling(
     module.addImport("spindle_executor", spindle);
     module.addImport("gravity", gravity);
     return b.addRunArtifact(b.addExecutable(.{ .name = "gravity-job-scaling", .root_module = module }));
+}
+
+fn addJobsTsanTest(b: *std.Build, target: std.Build.ResolvedTarget, metadata: *std.Build.Step.Options) *std.Build.Step.Compile {
+    const optimize: std.builtin.OptimizeMode = .ReleaseSafe;
+    const jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/dispatcher.zig"), .target = target, .optimize = optimize, .sanitize_thread = true });
+    const spindle = b.createModule(.{ .root_source_file = b.path("third_party/spindle/src/executor.zig"), .target = target, .optimize = optimize, .sanitize_thread = true });
+    const spindle_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/spindle_dispatcher.zig"), .target = target, .optimize = optimize, .sanitize_thread = true });
+    spindle_jobs.addImport("gravity_jobs", jobs);
+    spindle_jobs.addImport("spindle_executor", spindle);
+    const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize, .sanitize_thread = true });
+    host_jobs.addImport("gravity_jobs", jobs);
+    const gravity = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize, .sanitize_thread = true });
+    gravity.addImport("build_options", metadata.createModule());
+    gravity.addImport("gravity_jobs", jobs);
+    gravity.addImport("gravity_host_jobs", host_jobs);
+    const module = b.createModule(.{ .root_source_file = b.path("tests/unit/jobs_dispatcher_test.zig"), .target = target, .optimize = optimize, .sanitize_thread = true });
+    module.addImport("gravity_jobs", jobs);
+    module.addImport("gravity_spindle_jobs", spindle_jobs);
+    module.addImport("gravity_host_jobs", host_jobs);
+    module.addImport("spindle_executor", spindle);
+    module.addImport("gravity", gravity);
+    return b.addTest(.{ .name = "jobs-dispatcher-tsan", .root_module = module });
 }
 
 fn addZigTest(
