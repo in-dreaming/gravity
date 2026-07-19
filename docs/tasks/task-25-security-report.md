@@ -24,6 +24,8 @@ Date: 2026-07-19
 | deterministic corpus, three modes | 56/56 build steps; 45/45 tests passed |
 | parser minimizer | `asset-leading-decimal.json` reduced 59 to 56 bytes while preserving `InvalidDecimal` |
 | ABI and language consumers | 15/15 steps passed, including C11, C++17, C# and symbol checks |
+| clean-worktree `security-gate` | 89/89 steps; 79/79 tests passed |
+| Linux ThreadSanitizer execution | 4/4 steps; 9/9 dispatcher tests passed with no race report |
 | executor-only dependency audit | Spindle `6756fb2feecfa354a7ae42bca3af5d9bd66c7558`, MIT and SBOM verified |
 
-The final `security-gate` result below is recorded after running in a clean worktree with the pinned Spindle submodule. Linux executes ThreadSanitizer; Windows only cross-compiles that target because TSan runtime execution is host-specific.
+The final `security-gate` was recorded in a clean worktree with the pinned Spindle submodule. Linux executed ThreadSanitizer from a native temporary Git checkout; Windows also cross-compiled the same target.
