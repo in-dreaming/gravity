@@ -252,6 +252,10 @@ pub fn build(b: *std.Build) void {
     const small_run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
     small_run.addArgs(&.{ "Small", "8", "2", "0" });
     performance_small.dependOn(&small_run.step);
+    const performance_small_spindle = b.step("performance-small-spindle", "Enforce the Task 24 Small real-time rollback budget with Spindle");
+    const small_spindle_run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
+    small_spindle_run.addArgs(&.{ "Small", "16", "4", "8", "gate" });
+    performance_small_spindle.dependOn(&small_spindle_run.step);
     const performance_medium = b.step("performance-medium", "Run the frozen Task 24 Medium product benchmark");
     const medium_run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
     medium_run.addArgs(&.{ "Medium", "8", "2", "0" });
@@ -260,6 +264,21 @@ pub fn build(b: *std.Build) void {
     const medium_spindle_run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
     medium_spindle_run.addArgs(&.{ "Medium", "8", "2", "8" });
     performance_medium_spindle.dependOn(&medium_spindle_run.step);
+    const performance_scaling = b.step("performance-scaling", "Run Task 24 Medium and Stress worker scaling at 1/2/4/8 workers");
+    var prior_scaling_run: ?*std.Build.Step = null;
+    inline for ([_][]const u8{ "Medium", "Stress" }) |scene| {
+        inline for ([_][]const u8{ "1", "2", "4", "8" }) |workers| {
+            const run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
+            run.addArgs(&.{ scene, "8", "2", workers });
+            if (prior_scaling_run) |prior| run.step.dependOn(prior);
+            prior_scaling_run = &run.step;
+        }
+    }
+    performance_scaling.dependOn(prior_scaling_run.?);
+    const executor_overhead = b.step("performance-executor-overhead", "Measure Spindle submit/barrier/help-until/shutdown overhead and utilization");
+    const executor_module = b.createModule(.{ .root_source_file = b.path("tools/task24_executor_benchmark.zig"), .target = target, .optimize = .ReleaseFast });
+    executor_module.addImport("spindle_executor", addSpindleModule(b, target, .ReleaseFast));
+    executor_overhead.dependOn(&b.addRunArtifact(b.addExecutable(.{ .name = "gravity-task24-executor-benchmark", .root_module = executor_module })).step);
     inline for ([_]struct { step: []const u8, scene: []const u8 }{ .{ .step = "performance-stress", .scene = "Stress" }, .{ .step = "performance-mesh-heavy", .scene = "MeshHeavy" }, .{ .step = "performance-joint-heavy", .scene = "JointHeavy" }, .{ .step = "performance-ccd", .scene = "CCD" } }) |entry| {
         const single = b.step(entry.step, b.fmt("Run the frozen Task 24 {s} product benchmark", .{entry.scene}));
         const run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
