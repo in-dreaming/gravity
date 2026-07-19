@@ -321,11 +321,8 @@ fn sortIslands(items: []Island) void {
     }
 }
 fn sortRows(items: []ConstraintRow) void {
-    var i: usize = 1;
-    while (i < items.len) : (i += 1) {
-        const value = items[i];
-        var j = i;
-        while (j > 0 and value.key.lessThan(items[j - 1].key)) : (j -= 1) items[j] = items[j - 1];
-        items[j] = value;
-    }
+    std.sort.block(ConstraintRow, items, {}, rowLess);
+}
+fn rowLess(_: void, a: ConstraintRow, b: ConstraintRow) bool {
+    return a.key.lessThan(b.key);
 }
