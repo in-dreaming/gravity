@@ -107,7 +107,9 @@ fn runScene(allocator: std.mem.Allocator, label: []const u8, body_count: u32) !v
     var body: u64 = 0;
     for (0..body_count) |index| {
         body_desc.transform.position.x = @as(i64, @intCast(index)) << 32;
-        try expectAbi(abi.gravity_v1_world_create_body(world, &body_desc, &body));
+        const result = abi.gravity_v1_world_create_body(world, &body_desc, &body);
+        if (result != abi.ok) std.debug.print("create body {d} failed\n", .{index});
+        try expectAbi(result);
     }
 
     var snapshot_size: u64 = 0;
