@@ -128,6 +128,8 @@ pub fn build(b: *std.Build) void {
     all_modes.dependOn(core_all_modes);
     const spindle_all_modes = b.step("spindle-check-all-modes", "Validate Spindle integration in Debug, ReleaseSafe, and ReleaseFast");
     all_modes.dependOn(spindle_all_modes);
+    const job_scaling = b.step("job-scaling", "Measure Task 23 serial and Spindle 1/2/4/8 World scaling with hash validation");
+    job_scaling.dependOn(&addJobScaling(b, target, .ReleaseFast, metadata, addSpindleModule(b, target, .ReleaseFast)).step);
     inline for ([_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe, .ReleaseFast }) |mode| {
         spindle_all_modes.dependOn(&addSpindleTest(b, b.fmt("spindle-integration-{s}", .{@tagName(mode)}), target, mode, addSpindleModule(b, target, mode)).step);
         spindle_all_modes.dependOn(&addJobsTest(b, b.fmt("jobs-dispatcher-{s}", .{@tagName(mode)}), target, mode, metadata, addSpindleModule(b, target, mode)).step);
@@ -515,6 +517,31 @@ fn addJobsTest(
     module.addImport("spindle_executor", spindle);
     module.addImport("gravity", gravity);
     return b.addRunArtifact(b.addTest(.{ .name = name, .root_module = module }));
+}
+
+fn addJobScaling(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    metadata: *std.Build.Step.Options,
+    spindle: *std.Build.Module,
+) *std.Build.Step.Run {
+    const jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/dispatcher.zig"), .target = target, .optimize = optimize });
+    const spindle_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/spindle_dispatcher.zig"), .target = target, .optimize = optimize });
+    spindle_jobs.addImport("gravity_jobs", jobs);
+    spindle_jobs.addImport("spindle_executor", spindle);
+    const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
+    host_jobs.addImport("gravity_jobs", jobs);
+    const gravity = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+    gravity.addImport("build_options", metadata.createModule());
+    gravity.addImport("gravity_jobs", jobs);
+    gravity.addImport("gravity_host_jobs", host_jobs);
+    const module = b.createModule(.{ .root_source_file = b.path("tools/job_scaling.zig"), .target = target, .optimize = optimize });
+    module.addImport("gravity_jobs", jobs);
+    module.addImport("gravity_spindle_jobs", spindle_jobs);
+    module.addImport("spindle_executor", spindle);
+    module.addImport("gravity", gravity);
+    return b.addRunArtifact(b.addExecutable(.{ .name = "gravity-job-scaling", .root_module = module }));
 }
 
 fn addZigTest(
