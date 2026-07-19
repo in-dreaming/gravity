@@ -535,7 +535,7 @@ pub fn build(b: *std.Build) void {
     const demo_install = b.addSystemCommand(&.{ "node", "demo/web/scripts/install.mjs" });
     demo_install.step.dependOn(&abi_schema_check.step);
     const vite_build = b.addSystemCommand(&.{ "pnpm", "--dir", "demo/web", "run", "build" });
-    vite_build.setEnvironmentVariable("GRAVITY_INSTALL_PREFIX", b.getInstallPath(.prefix, ""));
+    vite_build.setEnvironmentVariable("GRAVITY_INSTALL_PREFIX", b.pathFromRoot(b.getInstallPath(.prefix, "")));
     vite_build.step.dependOn(&demo_install.step);
     demo.dependOn(&vite_build.step);
 
