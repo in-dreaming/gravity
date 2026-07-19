@@ -112,6 +112,7 @@ fn runScene(allocator: std.mem.Allocator, label: []const u8, body_count: u32) !v
         try expectAbi(result);
     }
 
+    std.debug.print("{s}: snapshot\n", .{label});
     var snapshot_size: u64 = 0;
     try expectAbi(abi.gravity_v1_world_snapshot_size(world, &snapshot_size));
     const snapshot = try allocator.alloc(u8, @intCast(snapshot_size));
@@ -119,6 +120,7 @@ fn runScene(allocator: std.mem.Allocator, label: []const u8, body_count: u32) !v
     var required: u64 = 0;
     try expectAbi(abi.gravity_v1_world_snapshot_save(world, snapshot.ptr, snapshot.len, &required));
 
+    std.debug.print("{s}: serial warmup\n", .{label});
     _ = try runTicks(world, warmup_ticks);
     try expectAbi(abi.gravity_v1_world_snapshot_load(world, snapshot.ptr, snapshot.len));
     const serial_ns = try runTicks(world, ticks);
