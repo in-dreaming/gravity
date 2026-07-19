@@ -69,7 +69,7 @@ fn runScene(allocator: std.mem.Allocator, label: []const u8, body_count: u32) !v
         .struct_size = @sizeOf(abi.WorldDesc),
         .reserved = 0,
         .body_capacity = body_count,
-        .collider_capacity = 0,
+        .collider_capacity = 1,
         .command_capacity = 1,
         .contact_capacity = 1,
         .gravity = .{ .x = 0, .y = -(1 << 32), .z = 0 },
