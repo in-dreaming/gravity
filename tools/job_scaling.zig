@@ -28,7 +28,10 @@ const SpindleHost = struct {
 };
 
 fn expectAbi(result: u32) !void {
-    if (result != abi.ok) return error.AbiFailure;
+    if (result != abi.ok) {
+        std.debug.print("unexpected ABI result {d}\n", .{result});
+        return error.AbiFailure;
+    }
 }
 
 fn identityTransform() abi.Transform {
