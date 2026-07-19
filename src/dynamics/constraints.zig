@@ -1,4 +1,5 @@
 //! Deterministic island discovery and fixed-capacity 6D constraint rows.
+const std = @import("std");
 const fp = @import("../math/fp.zig");
 const geometry = @import("../math/geometry.zig");
 const ids = @import("../core/ids.zig");
@@ -160,6 +161,65 @@ pub fn build(world: *const body_world.World, edges: []const Edge, edge_scratch: 
     sortIslands(islands[0..island_count]);
     const row_count = try buildLockRows(world, rows, status);
     return .{ .islands = islands[0..island_count], .members = members[0..member_count], .rows = rows[0..row_count] };
+}
+
+/// Union-find production path with caller-owned parent storage. It emits the
+/// same ascending island/member order as `build` without rescanning every edge
+/// for every discovered member.
+pub fn buildWithParents(world: *const body_world.World, edges: []const Edge, edge_scratch: []Edge, islands: []Island, members: []ids.BodyId, rows: []ConstraintRow, parents: []u32, status: *fp.MathStatus) Error!BuildResult {
+    if (edges.len > edge_scratch.len or parents.len < world.storage.alive.len) return error.CapacityExceeded;
+    var dynamic_count: usize = 0;
+    var row_required: usize = 0;
+    const sentinel = std.math.maxInt(u32);
+    for (world.storage.alive, 0..) |alive, index| {
+        if (!alive or world.storage.body_type[index] != .dynamic) {
+            parents[index] = sentinel;
+            continue;
+        }
+        parents[index] = @intCast(index);
+        dynamic_count += 1;
+        const locks = world.storage.locks[index];
+        row_required += @as(usize, @intFromBool(locks.linear_x)) + @as(usize, @intFromBool(locks.linear_y)) + @as(usize, @intFromBool(locks.linear_z)) + @as(usize, @intFromBool(locks.angular_x)) + @as(usize, @intFromBool(locks.angular_y)) + @as(usize, @intFromBool(locks.angular_z));
+    }
+    if (members.len < dynamic_count or islands.len < dynamic_count or rows.len < row_required) return error.CapacityExceeded;
+    for (edges, 0..) |edge, index| {
+        try validateEdge(world, edge);
+        edge_scratch[index] = edge;
+        const a = world.bodyIndex(edge.body_a).?;
+        if (world.storage.body_type[a] != .dynamic or !edge.body_b.isValid()) continue;
+        const b = world.bodyIndex(edge.body_b).?;
+        if (world.storage.body_type[b] != .dynamic) continue;
+        const root_a = findRoot(parents, @intCast(a));
+        const root_b = findRoot(parents, @intCast(b));
+        if (root_a == root_b) continue;
+        const lower = @min(root_a, root_b);
+        const upper = @max(root_a, root_b);
+        parents[upper] = lower;
+    }
+    // Compress once before canonical output grouping.
+    for (parents[0..world.storage.alive.len], 0..) |parent, index| {
+        if (parent != sentinel) parents[index] = findRoot(parents, @intCast(index));
+    }
+    var member_count: usize = 0;
+    var island_count: usize = 0;
+    for (parents[0..world.storage.alive.len], 0..) |parent, root| {
+        if (parent == sentinel or parent != root) continue;
+        const first = member_count;
+        for (parents[0..world.storage.alive.len], 0..) |candidate_root, candidate| {
+            if (candidate_root != root) continue;
+            try appendMember(members, &member_count, world.bodyIdAt(candidate) orelse return error.InvalidBody);
+        }
+        islands[island_count] = .{ .id = members[first], .first_member = @intCast(first), .member_count = @intCast(member_count - first) };
+        island_count += 1;
+    }
+    const row_count = try buildLockRows(world, rows, status);
+    return .{ .islands = islands[0..island_count], .members = members[0..member_count], .rows = rows[0..row_count] };
+}
+
+fn findRoot(parents: []const u32, start: u32) u32 {
+    var current = start;
+    while (parents[current] != current) current = parents[current];
+    return current;
 }
 
 fn buildLockRows(world: *const body_world.World, output: []ConstraintRow, status: *fp.MathStatus) Error!usize {

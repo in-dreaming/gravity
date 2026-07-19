@@ -50,6 +50,14 @@ test "ordered island BFS does not bridge through static bodies" {
     try std.testing.expectEqual(@as(u32, 1), result.islands[1].member_count);
     try std.testing.expectEqual(a.value, result.islands[0].id.value);
     try std.testing.expectEqual(c.value, result.islands[1].id.value);
+    var union_edges: [3]constraints.Edge = undefined;
+    var union_islands: [4]constraints.Island = undefined;
+    var union_members: [4]gravity.core.ids.BodyId = undefined;
+    var union_rows: [8]constraints.ConstraintRow = undefined;
+    var parents: [4]u32 = undefined;
+    const union_result = try constraints.buildWithParents(&state, &input, &union_edges, &union_islands, &union_members, &union_rows, &parents, &status);
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(result.islands), std.mem.sliceAsBytes(union_result.islands));
+    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(result.members), std.mem.sliceAsBytes(union_result.members));
 }
 
 test "DOF rows use 6D Jacobians stable keys and reject zero K" {

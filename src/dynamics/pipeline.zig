@@ -292,6 +292,7 @@ pub const IslandWorkspace = struct {
     islands: []constraints.Island,
     members: []@import("../core/ids.zig").BodyId,
     lock_rows: []constraints.ConstraintRow,
+    union_parents: ?[]u32 = null,
     edge_len: usize = 0,
 };
 /// Caller-owned persistent Task 18 state and event/wake scratch. Sleep events
@@ -1353,7 +1354,10 @@ pub fn buildAnalyticIslands(world: *const world_mod.World, cache: *const contact
         count += 1;
     };
     workspace.edge_len = count;
-    return constraints.build(world, workspace.edges[0..count], workspace.edge_scratch, workspace.islands, workspace.members, workspace.lock_rows, status);
+    return if (workspace.union_parents) |parents|
+        constraints.buildWithParents(world, workspace.edges[0..count], workspace.edge_scratch, workspace.islands, workspace.members, workspace.lock_rows, parents, status)
+    else
+        constraints.build(world, workspace.edges[0..count], workspace.edge_scratch, workspace.islands, workspace.members, workspace.lock_rows, status);
 }
 
 fn buildSolverPartition(world: *const world_mod.World, islands: []const constraints.Island, members: []const @import("../core/ids.zig").BodyId, contacts: []const contact_solver.Contact, rows: []const constraints.ConstraintRow, partition: *SolverPartitionWorkspace) Error!void {
