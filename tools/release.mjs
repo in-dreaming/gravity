@@ -79,6 +79,7 @@ async function addTree(entries, diskRoot, archiveRoot, normalizeArchives = false
     const archive = `${archiveRoot}/${item.name}`.replaceAll("\\", "/");
     if (item.isDirectory()) await addTree(entries, disk, archive, normalizeArchives);
     else if (item.isFile()) {
+      if (normalizeArchives && item.name.endsWith(".pdb")) continue;
       const isStaticArchive = item.name.endsWith(".a") || item.name.endsWith("_static.lib");
       entries.push({ name: archive, data: normalizeArchives && isStaticArchive ? await normalizeStaticArchive(disk) : await readFile(disk) });
     }
