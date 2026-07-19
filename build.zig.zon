@@ -12,7 +12,6 @@
         "src",
         "tests",
         "tools",
-        "demo",
         "docs",
         "third_party/spindle",
         "CONTRIBUTING.md",

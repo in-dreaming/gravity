@@ -1,0 +1,24 @@
+{
+  "name": "gravity-web-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.22.2",
+    "pnpm": "11.7.0"
+  },
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "abi:check": "node scripts/generate-abi.mjs --check",
+    "abi:generate": "node scripts/generate-abi.mjs --write",
+    "build": "pnpm run abi:check && node scripts/check-isolation.mjs && tsc --noEmit && vite build",
+    "dev": "vite --host 127.0.0.1",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.1"
+  }
+}

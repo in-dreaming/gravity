@@ -24,6 +24,22 @@ extern "C" {
 #define GRAVITY_V1_SNAPSHOT_FORMAT_VERSION 1u
 #define GRAVITY_V1_ASSET_FORMAT_VERSION 2u
 
+/* Frozen layout constants consumed by the generated wasm32 TypeScript ABI. */
+#define GRAVITY_V1_WASM_SIZE_ASSET_BLOB 16u
+#define GRAVITY_V1_WASM_SIZE_ASSET_STORE_DESC 20u
+#define GRAVITY_V1_WASM_SIZE_WORLD_DESC 96u
+#define GRAVITY_V1_SIZE_BODY_DESC 128u
+#define GRAVITY_V1_SIZE_BODY_STATE 128u
+#define GRAVITY_V1_SIZE_COLLIDER_DESC 144u
+#define GRAVITY_V1_SIZE_COMMAND 144u
+#define GRAVITY_V1_SIZE_EVENT 48u
+#define GRAVITY_V1_SIZE_QUERY_FILTER 16u
+#define GRAVITY_V1_SIZE_RAY_QUERY 88u
+#define GRAVITY_V1_SIZE_POINT_QUERY 56u
+#define GRAVITY_V1_SIZE_AABB_QUERY 80u
+#define GRAVITY_V1_SIZE_SHAPE_QUERY 232u
+#define GRAVITY_V1_SIZE_QUERY_HIT 80u
+
 typedef int64_t GravityFpRaw;
 typedef uint64_t GravityId;
 typedef uint32_t GravityResult;
@@ -199,10 +215,32 @@ GRAVITY_API GravityResult gravity_v1_world_snapshot_load(GravityWorld *world, co
 static_assert(sizeof(GravityVec3) == 24, "GravityVec3 layout");
 static_assert(sizeof(GravityQuat) == 32, "GravityQuat layout");
 static_assert(sizeof(GravityHash128) == 16, "GravityHash128 layout");
+static_assert(sizeof(GravityBodyDesc) == GRAVITY_V1_SIZE_BODY_DESC, "GravityBodyDesc layout");
+static_assert(sizeof(GravityBodyState) == GRAVITY_V1_SIZE_BODY_STATE, "GravityBodyState layout");
+static_assert(sizeof(GravityColliderDesc) == GRAVITY_V1_SIZE_COLLIDER_DESC, "GravityColliderDesc layout");
+static_assert(sizeof(GravityCommand) == GRAVITY_V1_SIZE_COMMAND, "GravityCommand layout");
+static_assert(sizeof(GravityEvent) == GRAVITY_V1_SIZE_EVENT, "GravityEvent layout");
+static_assert(sizeof(GravityQueryFilter) == GRAVITY_V1_SIZE_QUERY_FILTER, "GravityQueryFilter layout");
+static_assert(sizeof(GravityRayQuery) == GRAVITY_V1_SIZE_RAY_QUERY, "GravityRayQuery layout");
+static_assert(sizeof(GravityPointQuery) == GRAVITY_V1_SIZE_POINT_QUERY, "GravityPointQuery layout");
+static_assert(sizeof(GravityAabbQuery) == GRAVITY_V1_SIZE_AABB_QUERY, "GravityAabbQuery layout");
+static_assert(sizeof(GravityShapeQuery) == GRAVITY_V1_SIZE_SHAPE_QUERY, "GravityShapeQuery layout");
+static_assert(sizeof(GravityQueryHit) == GRAVITY_V1_SIZE_QUERY_HIT, "GravityQueryHit layout");
 #else
 _Static_assert(sizeof(GravityVec3) == 24, "GravityVec3 layout");
 _Static_assert(sizeof(GravityQuat) == 32, "GravityQuat layout");
 _Static_assert(sizeof(GravityHash128) == 16, "GravityHash128 layout");
+_Static_assert(sizeof(GravityBodyDesc) == GRAVITY_V1_SIZE_BODY_DESC, "GravityBodyDesc layout");
+_Static_assert(sizeof(GravityBodyState) == GRAVITY_V1_SIZE_BODY_STATE, "GravityBodyState layout");
+_Static_assert(sizeof(GravityColliderDesc) == GRAVITY_V1_SIZE_COLLIDER_DESC, "GravityColliderDesc layout");
+_Static_assert(sizeof(GravityCommand) == GRAVITY_V1_SIZE_COMMAND, "GravityCommand layout");
+_Static_assert(sizeof(GravityEvent) == GRAVITY_V1_SIZE_EVENT, "GravityEvent layout");
+_Static_assert(sizeof(GravityQueryFilter) == GRAVITY_V1_SIZE_QUERY_FILTER, "GravityQueryFilter layout");
+_Static_assert(sizeof(GravityRayQuery) == GRAVITY_V1_SIZE_RAY_QUERY, "GravityRayQuery layout");
+_Static_assert(sizeof(GravityPointQuery) == GRAVITY_V1_SIZE_POINT_QUERY, "GravityPointQuery layout");
+_Static_assert(sizeof(GravityAabbQuery) == GRAVITY_V1_SIZE_AABB_QUERY, "GravityAabbQuery layout");
+_Static_assert(sizeof(GravityShapeQuery) == GRAVITY_V1_SIZE_SHAPE_QUERY, "GravityShapeQuery layout");
+_Static_assert(sizeof(GravityQueryHit) == GRAVITY_V1_SIZE_QUERY_HIT, "GravityQueryHit layout");
 #endif
 
 #endif

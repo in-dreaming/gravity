@@ -1,0 +1,10 @@
+.{
+    .name = .gravity_core_consumer,
+    .version = "0.0.0",
+    .fingerprint = 0xede4ad04d0ab33f7,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .gravity = .{ .path = "../../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

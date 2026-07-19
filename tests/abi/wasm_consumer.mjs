@@ -45,8 +45,12 @@ if (needed > api.memory.buffer.byteLength) {
 const worldOut = worldMemory + worldSize + 8;
 ok(api.gravity_v1_world_init(worldMemory, BigInt(worldSize), worldDesc, worldOut), "world init");
 const world = view.getUint32(worldOut, true);
+const dispatcher = worldOut + 8;
+u32(dispatcher, 16); u32(dispatcher + 4, 0); u32(dispatcher + 8, 1); u32(dispatcher + 12, 1);
+if (api.gravity_v1_world_set_dispatcher(world, dispatcher) !== 12) throw new Error("WASM accepted a host dispatcher");
+ok(api.gravity_v1_world_set_dispatcher(world, 0), "clear serial dispatcher");
 
-const bodyDesc = worldOut + 16;
+const bodyDesc = worldOut + 32;
 u32(bodyDesc, 128); u32(bodyDesc + 4, 0); u32(bodyDesc + 8, 1); u32(bodyDesc + 12, 0);
 for (let at = 16; at < 72; at += 8) i64(bodyDesc + at, 0);
 i64(bodyDesc + 64, 1n << 32n); i64(bodyDesc + 72, 1n << 32n);
@@ -67,6 +71,10 @@ const a = Buffer.from(api.memory.buffer.slice(hashA, hashA + 16));
 const b = Buffer.from(api.memory.buffer.slice(hashB, hashB + 16));
 if (!a.equals(b)) throw new Error("WASM snapshot hash mismatch");
 if (a.toString("hex") !== "4336297d3f06a9c557e75aea2a839853") throw new Error("WASM/Zig reference hash mismatch");
+ok(api.gravity_v1_world_step(world, 0, 0), "empty replay step");
+ok(api.gravity_v1_world_hash(world, hashA), "replay hash");
+const replayHash = Buffer.from(api.memory.buffer.slice(hashA, hashA + 16)).toString("hex");
+if (replayHash !== "3abdf5be432885c4b137c5367272516f") throw new Error("WASM/Zig replay hash mismatch");
 ok(api.gravity_v1_world_deinit(world), "world deinit");
 ok(api.gravity_v1_asset_store_deinit(assets), "asset deinit");
 console.log(a.toString("hex"));

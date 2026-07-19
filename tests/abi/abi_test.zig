@@ -107,6 +107,20 @@ test "caller-memory ABI drives World query hash and snapshot transaction" {
     var reference_hash: abi.Hash128 = undefined;
     try expectOk(abi.gravity_v1_world_hash(world, &reference_hash));
     try std.testing.expectEqualStrings("4336297d3f06a9c557e75aea2a839853", &std.fmt.bytesToHex(reference_hash.bytes, .lower));
+    var parity_snapshot_size: u64 = 0;
+    try expectOk(abi.gravity_v1_world_snapshot_size(world, &parity_snapshot_size));
+    const parity_snapshot = try allocator.alloc(u8, @intCast(parity_snapshot_size));
+    defer allocator.free(parity_snapshot);
+    var parity_snapshot_required: u64 = 0;
+    try expectOk(abi.gravity_v1_world_snapshot_save(world, parity_snapshot.ptr, parity_snapshot.len, &parity_snapshot_required));
+    try expectOk(abi.gravity_v1_world_step(world, null, 0));
+    var replay_hash: abi.Hash128 = undefined;
+    try expectOk(abi.gravity_v1_world_hash(world, &replay_hash));
+    try std.testing.expectEqualStrings("3abdf5be432885c4b137c5367272516f", &std.fmt.bytesToHex(replay_hash.bytes, .lower));
+    try expectOk(abi.gravity_v1_world_snapshot_load(world, parity_snapshot.ptr, parity_snapshot.len));
+    var restored_reference_hash: abi.Hash128 = undefined;
+    try expectOk(abi.gravity_v1_world_hash(world, &restored_reference_hash));
+    try std.testing.expectEqualSlices(u8, &reference_hash.bytes, &restored_reference_hash.bytes);
     var collider_desc = abi.ColliderDesc{
         .struct_size = @sizeOf(abi.ColliderDesc),
         .reserved = 0,

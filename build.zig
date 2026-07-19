@@ -18,6 +18,20 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
     const metadata = addBuildMetadata(b);
+    const package_module = b.addModule("gravity", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = false,
+        .link_libcpp = false,
+    });
+    package_module.addImport("build_options", metadata.createModule());
+    package_module.addImport("gravity_abi_options", addAbiOptionsModule(b, target));
+    const package_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/dispatcher.zig"), .target = target, .optimize = optimize });
+    const package_host_jobs = b.createModule(.{ .root_source_file = b.path(if (target.result.cpu.arch == .wasm32) "src/jobs/wasm_serial.zig" else "src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
+    if (target.result.cpu.arch != .wasm32) package_host_jobs.addImport("gravity_jobs", package_jobs);
+    package_module.addImport("gravity_jobs", package_jobs);
+    package_module.addImport("gravity_host_jobs", package_host_jobs);
     const static_library = b.addLibrary(.{
         .name = "gravity_static",
         .root_module = addAbiModule(b, target, optimize, metadata),
@@ -494,16 +508,31 @@ pub fn build(b: *std.Build) void {
     const spindle_check = b.step("spindle-check", "Validate the pinned minimal Spindle executor profile");
     spindle_check.dependOn(&addSpindleTest(b, "spindle-integration", target, optimize, addSpindleModule(b, target, optimize)).step);
 
-    const demo = b.step("demo", "Build the core WASM artifact and verify frontend prerequisites");
-    const node_check = b.addSystemCommand(&.{ "node", "--version" });
-    node_check.step.dependOn(&install_wasm.step);
-    const pnpm_check = b.addSystemCommand(&.{ "pnpm", "--version" });
-    pnpm_check.step.dependOn(&node_check.step);
-    demo.dependOn(&pnpm_check.step);
+    const demo = b.step("demo", "Build and verify the isolated Task 26 WASM and TypeScript frontend");
+    const install_demo_wasm = b.addInstallArtifact(wasm_library, .{ .dest_sub_path = "demo-assets/gravity.wasm" });
+    const verify_demo_wasm = b.addSystemCommand(&.{ "node", "demo/web/scripts/verify-wasm.mjs" });
+    verify_demo_wasm.addArtifactArg(wasm_library);
+    verify_demo_wasm.step.dependOn(&install_demo_wasm.step);
+    const abi_schema_check = b.addSystemCommand(&.{ "node", "demo/web/scripts/generate-abi.mjs", "--check" });
+    abi_schema_check.step.dependOn(&verify_demo_wasm.step);
+    const demo_install = b.addSystemCommand(&.{ "node", "demo/web/scripts/install.mjs" });
+    demo_install.step.dependOn(&abi_schema_check.step);
+    const vite_build = b.addSystemCommand(&.{ "pnpm", "--dir", "demo/web", "run", "build" });
+    vite_build.step.dependOn(&demo_install.step);
+    demo.dependOn(&vite_build.step);
 
-    const demo_run = b.step("demo-run", "Start the Task 26 frontend when it is available");
+    const demo_test = b.step("demo-test", "Run the Task 26 headless ABI, growth, lifecycle and parity smoke");
+    const playwright = b.addSystemCommand(&.{ "pnpm", "--dir", "demo/web", "run", "test" });
+    playwright.step.dependOn(&vite_build.step);
+    demo_test.dependOn(&playwright.step);
+
+    const demo_isolation = b.step("demo-isolation", "Build an external-style Zig core consumer without frontend dependencies");
+    const consumer = b.addSystemCommand(&.{ "zig", "build", "--build-file", "tests/isolation/consumer/build.zig", "--cache-dir", ".zig-cache/demo-consumer" });
+    demo_isolation.dependOn(&consumer.step);
+
+    const demo_run = b.step("demo-run", "Build and start the Task 26 local Vite server");
     const vite_run = b.addSystemCommand(&.{ "pnpm", "--dir", "demo/web", "run", "dev" });
-    vite_run.step.dependOn(&pnpm_check.step);
+    vite_run.step.dependOn(&vite_build.step);
     demo_run.dependOn(&vite_run.step);
 }
 
@@ -529,9 +558,10 @@ fn addCoreModule(
         .link_libcpp = false,
     });
     module.addImport("build_options", metadata.createModule());
+    module.addImport("gravity_abi_options", addAbiOptionsModule(b, target));
     const jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/dispatcher.zig"), .target = target, .optimize = optimize });
-    const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
-    host_jobs.addImport("gravity_jobs", jobs);
+    const host_jobs = b.createModule(.{ .root_source_file = b.path(if (target.result.cpu.arch == .wasm32) "src/jobs/wasm_serial.zig" else "src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
+    if (target.result.cpu.arch != .wasm32) host_jobs.addImport("gravity_jobs", jobs);
     module.addImport("gravity_jobs", jobs);
     module.addImport("gravity_host_jobs", host_jobs);
     return module;
@@ -551,12 +581,19 @@ fn addAbiModule(
         .link_libcpp = false,
     });
     module.addImport("build_options", metadata.createModule());
+    module.addImport("gravity_abi_options", addAbiOptionsModule(b, target));
     const jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/dispatcher.zig"), .target = target, .optimize = optimize });
-    const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
-    host_jobs.addImport("gravity_jobs", jobs);
+    const host_jobs = b.createModule(.{ .root_source_file = b.path(if (target.result.cpu.arch == .wasm32) "src/jobs/wasm_serial.zig" else "src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
+    if (target.result.cpu.arch != .wasm32) host_jobs.addImport("gravity_jobs", jobs);
     module.addImport("gravity_jobs", jobs);
     module.addImport("gravity_host_jobs", host_jobs);
     return module;
+}
+
+fn addAbiOptionsModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
+    const options = b.addOptions();
+    options.addOption(bool, "serial_wasm", target.result.cpu.arch == .wasm32);
+    return options.createModule();
 }
 
 fn addSpindleModule(
@@ -603,6 +640,7 @@ fn addJobsTest(
     const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
     host_jobs.addImport("gravity_jobs", jobs);
     const gravity = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+    gravity.addImport("gravity_abi_options", addAbiOptionsModule(b, target));
     gravity.addImport("build_options", metadata.createModule());
     gravity.addImport("gravity_jobs", jobs);
     gravity.addImport("gravity_host_jobs", host_jobs);
@@ -629,6 +667,7 @@ fn addJobScaling(
     const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
     host_jobs.addImport("gravity_jobs", jobs);
     const gravity = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+    gravity.addImport("gravity_abi_options", addAbiOptionsModule(b, target));
     gravity.addImport("build_options", metadata.createModule());
     gravity.addImport("gravity_jobs", jobs);
     gravity.addImport("gravity_host_jobs", host_jobs);
@@ -650,6 +689,7 @@ fn addJobsTsanTest(b: *std.Build, target: std.Build.ResolvedTarget, metadata: *s
     const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize, .sanitize_thread = true });
     host_jobs.addImport("gravity_jobs", jobs);
     const gravity = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize, .sanitize_thread = true });
+    gravity.addImport("gravity_abi_options", addAbiOptionsModule(b, target));
     gravity.addImport("build_options", metadata.createModule());
     gravity.addImport("gravity_jobs", jobs);
     gravity.addImport("gravity_host_jobs", host_jobs);
@@ -783,6 +823,7 @@ fn addTask24Benchmark(
     const host_jobs = b.createModule(.{ .root_source_file = b.path("src/jobs/host_dispatcher.zig"), .target = target, .optimize = optimize });
     host_jobs.addImport("gravity_jobs", jobs);
     const gravity = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+    gravity.addImport("gravity_abi_options", addAbiOptionsModule(b, target));
     gravity.addImport("build_options", metadata.createModule());
     gravity.addImport("gravity_jobs", jobs);
     gravity.addImport("gravity_host_jobs", host_jobs);

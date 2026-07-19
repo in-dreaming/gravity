@@ -10,6 +10,7 @@
     "GravityHash128": { "size": 16, "alignment": 1 }
   },
   "reference_hash": "4336297d3f06a9c557e75aea2a839853",
+  "replay_hash": "3abdf5be432885c4b137c5367272516f",
   "exports": [
     "gravity_v1_abi_version", "gravity_v1_build_info", "gravity_v1_result_string",
     "gravity_v1_asset_store_memory_required", "gravity_v1_asset_store_init", "gravity_v1_asset_store_deinit", "gravity_v1_asset_store_hash",

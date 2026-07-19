@@ -1,3 +1,6 @@
 .zig-cache/
 zig-out/
 *.o
+node_modules/
+playwright-report/
+test-results/

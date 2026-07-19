@@ -20,6 +20,7 @@ const queries = @import("../query/queries.zig");
 const snapshot = @import("../state/snapshot.zig");
 const store_mod = @import("../assets/store.zig");
 const build_options = @import("build_options");
+const abi_options = @import("gravity_abi_options");
 const jobs = @import("gravity_jobs");
 const host_jobs = @import("gravity_host_jobs");
 
@@ -201,8 +202,10 @@ pub const World = struct {
 };
 
 comptime {
-    if (@sizeOf(Vec3) != 24 or @sizeOf(Quat) != 32 or @sizeOf(Hash128) != 16) @compileError("C ABI scalar layout drift");
-    if (@offsetOf(BodyState, "id") != 8 or @offsetOf(Command, "body") != 24) @compileError("C ABI field layout drift");
+    if (@sizeOf(Vec3) != 24 or @sizeOf(Quat) != 32 or @sizeOf(Transform) != 56 or @sizeOf(Hash128) != 16) @compileError("C ABI scalar layout drift");
+    if (@sizeOf(BodyDesc) != 128 or @sizeOf(BodyState) != 128 or @sizeOf(ColliderDesc) != 144 or @sizeOf(Command) != 144 or @sizeOf(Event) != 48 or @sizeOf(Filter) != 16 or @sizeOf(RayQuery) != 88 or @sizeOf(PointQuery) != 56 or @sizeOf(AabbQuery) != 80 or @sizeOf(ShapeQuery) != 232 or @sizeOf(QueryHit) != 80) @compileError("C ABI aggregate layout drift");
+    if (@offsetOf(BodyDesc, "transform") != 16 or @offsetOf(BodyDesc, "inverse_mass") != 72 or @offsetOf(BodyState, "id") != 8 or @offsetOf(BodyState, "transform") != 24 or @offsetOf(BodyState, "linear_velocity") != 80 or @offsetOf(BodyState, "angular_velocity") != 104 or @offsetOf(ColliderDesc, "body") != 8 or @offsetOf(ColliderDesc, "local") != 24 or @offsetOf(ColliderDesc, "dimensions") != 80 or @offsetOf(Command, "body") != 24 or @offsetOf(Command, "first") != 32 or @offsetOf(Command, "second") != 56 or @offsetOf(Command, "transform") != 80 or @offsetOf(QueryHit, "collider") != 8 or @offsetOf(QueryHit, "fraction") != 16 or @offsetOf(QueryHit, "point") != 24 or @offsetOf(QueryHit, "normal") != 48) @compileError("C ABI field layout drift");
+    if (@import("builtin").target.cpu.arch == .wasm32 and (@sizeOf(AssetBlob) != 16 or @sizeOf(AssetStoreDesc) != 20 or @sizeOf(WorldDesc) != 96 or @offsetOf(AssetStoreDesc, "asset_count") != 12 or @offsetOf(WorldDesc, "assets") != 88)) @compileError("wasm32 C ABI layout drift");
 }
 
 fn validStruct(value: anytype) bool {
@@ -322,6 +325,22 @@ fn leave(world: *World, result: u32) u32 {
     world.last_error = result;
     world.in_call = 0;
     return result;
+}
+
+fn dispatchBatch(world: *World, batch: jobs.Batch) jobs.Error!void {
+    if (comptime abi_options.serial_wasm) {
+        return jobs.serialDispatch(batch);
+    } else {
+        var host: host_jobs.Dispatcher = undefined;
+        var custom: jobs.Custom = undefined;
+        var dispatcher = jobs.Dispatcher{ .serial = {} };
+        if (world.dispatcher.dispatch_batch) |callback| {
+            host = .{ .user = world.dispatcher.user, .dispatch_batch = callback, .seen = world.host_dispatch_seen };
+            custom = host.custom();
+            dispatcher = .{ .custom = &custom };
+        }
+        return dispatcher.dispatch(batch);
+    }
 }
 fn checked(world: ?*World) ?*World {
     const value = world orelse return null;
@@ -635,6 +654,7 @@ pub export fn gravity_v1_world_set_dispatcher(world: ?*World, dispatcher: ?*cons
         value.dispatcher.user = null;
         return ok;
     };
+    if (comptime abi_options.serial_wasm) return unsupported;
     if (!validStruct(d) or d.dispatch_batch == null) return bad_struct;
     value.dispatcher = d.*;
     return ok;
@@ -686,14 +706,18 @@ pub export fn gravity_v1_world_step(world_ptr: ?*World, input: [*c]const Command
     const rollback_bytes = snapshotBytes(world) catch |err| return leave(world, mapError(err));
     var status = fp.MathStatus{};
     var workspace = pipeline.Workspace{ .commands = world.commands, .trace = world.trace };
-    var host: host_jobs.Dispatcher = undefined;
-    var custom: jobs.Custom = undefined;
-    if (world.dispatcher.dispatch_batch) |callback| {
-        host = .{ .user = world.dispatcher.user, .dispatch_batch = callback, .seen = world.host_dispatch_seen };
-        custom = host.custom();
-        workspace.dispatcher = .{ .custom = &custom };
-    }
-    const stepped = pipeline.stepWithAnalyticSolver(&world.value, &world.state, world.simulation, world.commands[0..count], &workspace, &world.solver_pipeline, &status) catch |err| {
+    const stepped = (if (comptime abi_options.serial_wasm)
+        pipeline.stepWithAnalyticSolver(&world.value, &world.state, world.simulation, world.commands[0..count], &workspace, &world.solver_pipeline, &status)
+    else block: {
+        var host: host_jobs.Dispatcher = undefined;
+        var custom: jobs.Custom = undefined;
+        if (world.dispatcher.dispatch_batch) |callback| {
+            host = .{ .user = world.dispatcher.user, .dispatch_batch = callback, .seen = world.host_dispatch_seen };
+            custom = host.custom();
+            workspace.dispatcher = .{ .custom = &custom };
+        }
+        break :block pipeline.stepWithAnalyticSolver(&world.value, &world.state, world.simulation, world.commands[0..count], &workspace, &world.solver_pipeline, &status);
+    }) catch |err| {
         const failure = mapError(err);
         const restored = snapshot.decodePipelineBodiesContactsSnapshotChecked(rollback_bytes, .{ .configuration = world.simulation, .asset_set = world.assets.value.asset_set_hash }, &world.value, &world.stage, &world.cache, world.stage_contacts, world.contact_scratch) catch return leave(world, internal);
         world.state = restored.state;
@@ -889,15 +913,7 @@ pub export fn gravity_v1_world_query_ray(world_ptr: ?*World, query_ptr: ?*const 
         };
         var kernel = Kernel{ .ray = ray, .filter = f, .items = world.query_items[0..count], .slots = world.query_candidates[0..count], .flags = world.query_flags[0..count], .plan = plan };
         if (plan.job_count != 0) {
-            var host: host_jobs.Dispatcher = undefined;
-            var custom: jobs.Custom = undefined;
-            var dispatcher = jobs.Dispatcher{ .serial = {} };
-            if (world.dispatcher.dispatch_batch) |callback| {
-                host = .{ .user = world.dispatcher.user, .dispatch_batch = callback, .seen = world.host_dispatch_seen };
-                custom = host.custom();
-                dispatcher = .{ .custom = &custom };
-            }
-            dispatcher.dispatch(.{ .context = &kernel, .job_count = plan.job_count, .run = Kernel.run }) catch {
+            dispatchBatch(world, .{ .context = &kernel, .job_count = plan.job_count, .run = Kernel.run }) catch {
                 for (kernel.errors[0..plan.job_count]) |failure| if (failure != ok) return leave(world, failure);
                 return leave(world, callback_error);
             };
@@ -969,15 +985,7 @@ fn overlapQuery(world: *World, query_filter: queries.Filter, query_mode: queries
     };
     var kernel = Kernel{ .world = world, .items = world.query_items[0..count], .flags = world.query_flags[0..count], .filter = query_filter, .kind = kind, .point = point, .bounds = bounds, .shape = shape, .shape_transform = shape_transform, .plan = plan };
     if (plan.job_count != 0) {
-        var host: host_jobs.Dispatcher = undefined;
-        var custom: jobs.Custom = undefined;
-        var dispatcher = jobs.Dispatcher{ .serial = {} };
-        if (world.dispatcher.dispatch_batch) |callback| {
-            host = .{ .user = world.dispatcher.user, .dispatch_batch = callback, .seen = world.host_dispatch_seen };
-            custom = host.custom();
-            dispatcher = .{ .custom = &custom };
-        }
-        dispatcher.dispatch(.{ .context = &kernel, .job_count = plan.job_count, .run = Kernel.run }) catch {
+        dispatchBatch(world, .{ .context = &kernel, .job_count = plan.job_count, .run = Kernel.run }) catch {
             for (kernel.errors[0..plan.job_count]) |failure| if (failure != ok) return failure;
             return callback_error;
         };
