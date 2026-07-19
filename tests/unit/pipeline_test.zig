@@ -534,24 +534,24 @@ test "mesh primitive pair ranges match serial under reverse and permuted schedul
         triangle.* = .{ .a = 0, .b = 1, .c = 2 };
         primitive.* = @intCast(index);
     }
-    const bounds = g.Aabb3{ .min = .{ .x = fp.Fp.fromInt(-1), .z = fp.Fp.fromInt(-1) }, .max = .{ .x = fp.Fp.fromInt(1), .z = fp.Fp.fromInt(1) } };
-    const nodes = [_]baked.BvhNode{baked.BvhNode.leaf(bounds, 0, triangle_count)};
+    var baked_nodes: [64]baked.BvhNode = undefined;
+    const built = try baked.buildTriangleBvh(&vertices, &triangles, &baked_nodes, &primitives);
     var bytes_a: [8192]u8 = undefined;
     var bytes_b: [8192]u8 = undefined;
     var bake_scratch_a: [4096]u8 = undefined;
     var bake_scratch_b: [4096]u8 = undefined;
-    const encoded_a = try baked.encodeMesh(.{ .source_id = 91, .vertices = &vertices, .triangles = &triangles, .nodes = &nodes, .primitives = &primitives }, &bytes_a, &bake_scratch_a);
-    const encoded_b = try baked.encodeMesh(.{ .source_id = 92, .vertices = &vertices, .triangles = &triangles, .nodes = &nodes, .primitives = &primitives }, &bytes_b, &bake_scratch_b);
+    const encoded_a = try baked.encodeMesh(.{ .source_id = 91, .vertices = &vertices, .triangles = &triangles, .nodes = built.nodes, .primitives = built.primitives }, &bytes_a, &bake_scratch_a);
+    const encoded_b = try baked.encodeMesh(.{ .source_id = 92, .vertices = &vertices, .triangles = &triangles, .nodes = built.nodes, .primitives = built.primitives }, &bytes_b, &bake_scratch_b);
     var asset_memory: [20_000]u8 align(@alignOf(store.Asset)) = undefined;
     const assets = try store.Store.init(&asset_memory, &.{ encoded_a.bytes, encoded_b.bytes });
     const view_a = try gravity.assets.runtime_view.find(&assets, 91);
     const view_b = try gravity.assets.runtime_view.find(&assets, 92);
 
-    var nodes_a: [1]baked.BvhNode = undefined;
-    var nodes_b: [1]baked.BvhNode = undefined;
+    var nodes_a: [64]baked.BvhNode = undefined;
+    var nodes_b: [64]baked.BvhNode = undefined;
     var decoded_a: [triangle_count]u32 = undefined;
     var decoded_b: [triangle_count]u32 = undefined;
-    var work: [1]mesh.NodePair = undefined;
+    var work: [candidate_count]mesh.NodePair = undefined;
     var pair_scratch: [candidate_count]mesh.PrimitivePair = undefined;
     var pair_output: [candidate_count]mesh.PrimitivePair = undefined;
     var overlaps: [candidate_count]mesh.PrimitivePair = undefined;
