@@ -9,12 +9,12 @@ Coverage groups:
 - create/destroy/joint/snapshot/100k rollback tests from the state suites plus worker/backend switching from the Task 21/23 corpus;
 - Spindle submit, completion, queue release, reset, cancel, callback failure, backpressure, shutdown, stale handle, and one-million reuse sequence.
 
-The coverage-guided parser entry uses Zig 0.16 `std.testing.fuzz`. Its empty generated seed is complemented by the committed deterministic corpus below. The Task 25 acceptance budget is 10 million generated inputs on Linux; release qualification raises this to one CPU-hour for each supported native target, followed by deterministic three-mode replay. CI freezes the explicit loop counts in source (currently more than 60,000 parser/decimal probes, 20,000 triangle pairs, 125 GJK/EPA offsets, 1,000 ABI descriptor mutations, up to 1,024 snapshot mutations, 10,000 World state transitions, and 2,000 Spindle sequences per mode). Timeouts, OOM, and `internal` results are failures.
+The coverage-guided parser entry uses Zig 0.16 `std.testing.fuzz`. Its empty generated seed is complemented by the committed deterministic corpus below. Task 25 and release qualification freeze at least one CPU-hour for this combined parser target on each supported native target, followed by deterministic three-mode replay. CI freezes the explicit loop counts in source (currently more than 60,000 parser/decimal probes, 20,000 triangle pairs, 125 GJK/EPA offsets, 1,000 ABI descriptor mutations, up to 1,024 snapshot mutations, 10,000 World state transitions, and 2,000 Spindle sequences per mode). Timeouts, OOM, and `internal` results are failures.
 
 Zig 0.16 does not implement `--fuzz` on Windows. Run the coverage-guided target under Linux/WSL with cache directories on the Linux filesystem (an NTFS-hosted Zig cache cannot atomically rename every entry):
 
 ```sh
-zig build fuzz-instrumented --fuzz=10M -j1 --summary all \
+zig build fuzz-instrumented --fuzz=100M -j1 --summary all \
   --cache-dir /tmp/gravity-local-cache \
   --global-cache-dir /tmp/gravity-zig-cache
 ```

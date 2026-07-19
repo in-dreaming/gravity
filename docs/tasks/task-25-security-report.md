@@ -20,7 +20,7 @@ Date: 2026-07-19
 
 | Gate | Result |
 | --- | --- |
-| Linux Zig coverage-guided parser | 10,386,513 cumulative runs; 1,848 unique runs; 1320/11329 edges (11.65%); no crash/OOM/timeout |
+| Linux Zig coverage-guided parser | 72 minutes; 102,942,390 runs; 5,684 unique runs; 1168/11329 edges (10.31%); no crash/OOM/timeout |
 | deterministic corpus, three modes | 56/56 build steps; 45/45 tests passed |
 | parser minimizer | `asset-leading-decimal.json` reduced 59 to 56 bytes while preserving `InvalidDecimal` |
 | ABI and language consumers | 15/15 steps passed, including C11, C++17, C# and symbol checks |
