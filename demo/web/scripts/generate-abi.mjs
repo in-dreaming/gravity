@@ -32,7 +32,8 @@ const macroNames = {
   shapeQuery: "GRAVITY_V1_SIZE_SHAPE_QUERY",
   shapeCastQuery: "GRAVITY_V1_SIZE_SHAPE_CAST_QUERY",
   queryHit: "GRAVITY_V1_SIZE_QUERY_HIT",
-  worldStats: "GRAVITY_V1_SIZE_WORLD_STATS"
+  worldStats: "GRAVITY_V1_SIZE_WORLD_STATS",
+  worldFault: "GRAVITY_V1_SIZE_WORLD_FAULT"
 };
 const header = readFileSync(headerPath, "utf8");
 for (const [layout, macro] of Object.entries(macroNames)) {

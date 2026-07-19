@@ -31,6 +31,7 @@
     "shapeQuery": { "size": 232, "shape": 8, "transform": 152, "filter": 208 },
     "shapeCastQuery": { "size": 256, "shape": 8, "start": 152, "delta": 208, "filter": 232 },
     "queryHit": { "size": 80, "collider": 8, "fraction": 16, "point": 24, "normal": 48 },
-    "worldStats": { "size": 84, "bodyCount": 8, "phaseVisits": 40 }
+    "worldStats": { "size": 84, "bodyCount": 8, "phaseVisits": 40 },
+    "worldFault": { "size": 48, "active": 8, "phase": 12, "code": 16, "detail": 20, "mathFault": 24, "hasObject": 28, "tick": 32, "object": 40 }
   }
 }

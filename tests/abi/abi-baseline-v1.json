@@ -15,7 +15,7 @@
     "gravity_v1_abi_version", "gravity_v1_build_info", "gravity_v1_result_string",
     "gravity_v1_asset_store_memory_required", "gravity_v1_asset_store_init", "gravity_v1_asset_store_deinit", "gravity_v1_asset_store_hash",
     "gravity_v1_world_memory_required", "gravity_v1_world_init", "gravity_v1_world_deinit", "gravity_v1_world_set_dispatcher",
-    "gravity_v1_world_tick", "gravity_v1_world_last_error", "gravity_v1_world_hash", "gravity_v1_world_step",
+    "gravity_v1_world_tick", "gravity_v1_world_last_error", "gravity_v1_world_last_fault", "gravity_v1_world_hash", "gravity_v1_world_step",
     "gravity_v1_world_create_body", "gravity_v1_world_destroy_body", "gravity_v1_world_body_states",
     "gravity_v1_world_create_collider", "gravity_v1_world_destroy_collider",
     "gravity_v1_world_create_joint", "gravity_v1_world_destroy_joint", "gravity_v1_world_set_body_ccd", "gravity_v1_world_stats", "gravity_v1_world_events",

@@ -19,6 +19,7 @@ type WasmExports = {
   gravity_v1_world_init(memory: number, memorySize: bigint, desc: number, output: number): number;
   gravity_v1_world_deinit(world: number): number;
   gravity_v1_world_tick(world: number, output: number): number;
+  gravity_v1_world_last_fault(world: number, output: number): number;
   gravity_v1_world_hash(world: number, output: number): number;
   gravity_v1_world_step(world: number, commands: number, count: number): number;
   gravity_v1_world_create_body(world: number, desc: number, output: number): number;
@@ -292,6 +293,7 @@ export type BodyState = Readonly<{ id: GravityId; bodyType: number; dofLocks: nu
 export type GravityEvent = Readonly<{ type: number; colliderA: GravityId; colliderB: GravityId; featureA: bigint; featureB: bigint }>;
 export type QueryHit = Readonly<{ collider: GravityId; fraction: FpRaw; point: Vec3Raw; normal: Vec3Raw; primitive: number }>;
 export type WorldStats = Readonly<{ bodyCount: number; colliderCount: number; jointCount: number; awakeBodyCount: number; contactCount: number; broadPairCount: number; eventCount: number; workerCount: number; phaseVisits: readonly number[] }>;
+export type WorldFault = Readonly<{ active: boolean; phase: number; code: number; detail: number; mathFault: number; tick: bigint; object: bigint | null }>;
 
 export class Gravity {
   readonly abiVersion: number;
@@ -537,6 +539,18 @@ export class World {
     } finally { this.gravity.release(output); }
   }
 
+  lastFault(): WorldFault {
+    this.ensureLive();
+    const output = this.gravity.allocate(ABI.layouts.worldFault.size, 8);
+    const view = this.gravity.view();
+    view.setUint32(output.ptr, ABI.layouts.worldFault.size, true);
+    try {
+      this.gravity.check(this.gravity.exports.gravity_v1_world_last_fault(this.pointer, output.ptr), "world_last_fault");
+      const hasObject = view.getUint32(output.ptr + ABI.layouts.worldFault.hasObject, true) !== 0;
+      return { active: view.getUint32(output.ptr + ABI.layouts.worldFault.active, true) !== 0, phase: view.getUint32(output.ptr + ABI.layouts.worldFault.phase, true), code: view.getUint32(output.ptr + ABI.layouts.worldFault.code, true), detail: view.getUint32(output.ptr + ABI.layouts.worldFault.detail, true), mathFault: view.getUint32(output.ptr + ABI.layouts.worldFault.mathFault, true), tick: view.getBigUint64(output.ptr + ABI.layouts.worldFault.tick, true), object: hasObject ? view.getBigUint64(output.ptr + ABI.layouts.worldFault.object, true) : null };
+    } finally { this.gravity.release(output); }
+  }
+
   step(commands: readonly CommandInput[]): void {
     this.ensureLive();
     const block = this.gravity.allocate(commands.length * ABI.layouts.command.size, 8);
@@ -555,7 +569,12 @@ export class World {
       view.setUint32(at + 136, command.dofLocks, true);
     }
     try {
-      this.gravity.check(this.gravity.exports.gravity_v1_world_step(this.pointer, commands.length === 0 ? 0 : block.ptr, commands.length), "world_step");
+      const result = this.gravity.exports.gravity_v1_world_step(this.pointer, commands.length === 0 ? 0 : block.ptr, commands.length);
+      if (result !== ABI.results.ok) {
+        const fault = this.lastFault();
+        if (fault.active) throw new Error(`world_step: result ${result}, phase ${fault.phase}, code ${fault.code}, detail ${fault.detail}, math ${fault.mathFault}, tick ${fault.tick}`);
+        this.gravity.check(result, "world_step");
+      }
     } finally {
       this.gravity.release(block);
     }

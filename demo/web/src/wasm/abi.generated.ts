@@ -179,6 +179,17 @@ export const ABI = {
       "size": 84,
       "bodyCount": 8,
       "phaseVisits": 40
+    },
+    "worldFault": {
+      "size": 48,
+      "active": 8,
+      "phase": 12,
+      "code": 16,
+      "detail": 20,
+      "mathFault": 24,
+      "hasObject": 28,
+      "tick": 32,
+      "object": 40
     }
   }
 } as const;
@@ -196,6 +207,7 @@ export const REQUIRED_EXPORTS = [
   "gravity_v1_world_set_dispatcher",
   "gravity_v1_world_tick",
   "gravity_v1_world_last_error",
+  "gravity_v1_world_last_fault",
   "gravity_v1_world_hash",
   "gravity_v1_world_step",
   "gravity_v1_world_create_body",

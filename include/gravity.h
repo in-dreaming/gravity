@@ -43,6 +43,7 @@ extern "C" {
 #define GRAVITY_V1_SIZE_SHAPE_CAST_QUERY 256u
 #define GRAVITY_V1_SIZE_QUERY_HIT 80u
 #define GRAVITY_V1_SIZE_WORLD_STATS 84u
+#define GRAVITY_V1_SIZE_WORLD_FAULT 48u
 
 typedef int64_t GravityFpRaw;
 typedef uint64_t GravityId;
@@ -209,6 +210,10 @@ typedef struct GravityWorldStats {
     uint32_t contact_count, broad_pair_count, event_count, worker_count;
     uint32_t phase_visits[11];
 } GravityWorldStats;
+typedef struct GravityWorldFault {
+    uint32_t struct_size, reserved, active, phase, code, detail, math_fault, has_object;
+    uint64_t tick, object;
+} GravityWorldFault;
 
 typedef GravityResult (*GravityRunJobFn)(void *batch_context, uint32_t job_index);
 typedef GravityResult (*GravityDispatchBatchFn)(void *user, uint32_t job_count,
@@ -232,6 +237,7 @@ GRAVITY_API GravityResult gravity_v1_world_deinit(GravityWorld *world);
 GRAVITY_API GravityResult gravity_v1_world_set_dispatcher(GravityWorld *world, const GravityDispatcher *dispatcher);
 GRAVITY_API GravityResult gravity_v1_world_tick(const GravityWorld *world, uint64_t *out_tick);
 GRAVITY_API GravityResult gravity_v1_world_last_error(const GravityWorld *world, GravityResult *out_error);
+GRAVITY_API GravityResult gravity_v1_world_last_fault(const GravityWorld *world, GravityWorldFault *out_fault);
 GRAVITY_API GravityResult gravity_v1_world_hash(const GravityWorld *world, GravityHash128 *out_hash);
 GRAVITY_API GravityResult gravity_v1_world_step(GravityWorld *world, const GravityCommand *commands, uint32_t command_count);
 
@@ -279,6 +285,7 @@ static_assert(sizeof(GravityShapeQuery) == GRAVITY_V1_SIZE_SHAPE_QUERY, "Gravity
 static_assert(sizeof(GravityShapeCastQuery) == GRAVITY_V1_SIZE_SHAPE_CAST_QUERY, "GravityShapeCastQuery layout");
 static_assert(sizeof(GravityQueryHit) == GRAVITY_V1_SIZE_QUERY_HIT, "GravityQueryHit layout");
 static_assert(sizeof(GravityWorldStats) == GRAVITY_V1_SIZE_WORLD_STATS, "GravityWorldStats layout");
+static_assert(sizeof(GravityWorldFault) == GRAVITY_V1_SIZE_WORLD_FAULT, "GravityWorldFault layout");
 #else
 _Static_assert(sizeof(GravityVec3) == 24, "GravityVec3 layout");
 _Static_assert(sizeof(GravityQuat) == 32, "GravityQuat layout");
@@ -298,6 +305,7 @@ _Static_assert(sizeof(GravityShapeQuery) == GRAVITY_V1_SIZE_SHAPE_QUERY, "Gravit
 _Static_assert(sizeof(GravityShapeCastQuery) == GRAVITY_V1_SIZE_SHAPE_CAST_QUERY, "GravityShapeCastQuery layout");
 _Static_assert(sizeof(GravityQueryHit) == GRAVITY_V1_SIZE_QUERY_HIT, "GravityQueryHit layout");
 _Static_assert(sizeof(GravityWorldStats) == GRAVITY_V1_SIZE_WORLD_STATS, "GravityWorldStats layout");
+_Static_assert(sizeof(GravityWorldFault) == GRAVITY_V1_SIZE_WORLD_FAULT, "GravityWorldFault layout");
 #endif
 
 #endif

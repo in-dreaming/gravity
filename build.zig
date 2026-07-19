@@ -508,11 +508,25 @@ pub fn build(b: *std.Build) void {
     const spindle_check = b.step("spindle-check", "Validate the pinned minimal Spindle executor profile");
     spindle_check.dependOn(&addSpindleTest(b, "spindle-integration", target, optimize, addSpindleModule(b, target, optimize)).step);
 
-    const demo = b.step("demo", "Build and verify the isolated Task 26 WASM and TypeScript frontend");
+    const demo = b.step("demo", "Build and verify the Task 27 React/Three WASM demo and baked assets");
     const install_demo_wasm = b.addInstallArtifact(wasm_library, .{ .dest_sub_path = "demo-assets/gravity.wasm" });
+    const demo_asset_tool = addTool(b, "demo_assets", b.graph.host, .ReleaseSafe, metadata);
+    const generate_demo_assets = b.addRunArtifact(demo_asset_tool);
+    const demo_hull = generate_demo_assets.addOutputFileArg("hull.grav");
+    const demo_mesh = generate_demo_assets.addOutputFileArg("mesh.grav");
+    const demo_height = generate_demo_assets.addOutputFileArg("height.grav");
+    const demo_compound = generate_demo_assets.addOutputFileArg("compound.grav");
+    const install_demo_hull = b.addInstallFile(demo_hull, "bin/demo-assets/hull.grav");
+    const install_demo_mesh = b.addInstallFile(demo_mesh, "bin/demo-assets/mesh.grav");
+    const install_demo_height = b.addInstallFile(demo_height, "bin/demo-assets/height.grav");
+    const install_demo_compound = b.addInstallFile(demo_compound, "bin/demo-assets/compound.grav");
     const verify_demo_wasm = b.addSystemCommand(&.{ "node", "demo/web/scripts/verify-wasm.mjs" });
     verify_demo_wasm.addArtifactArg(wasm_library);
     verify_demo_wasm.step.dependOn(&install_demo_wasm.step);
+    verify_demo_wasm.step.dependOn(&install_demo_hull.step);
+    verify_demo_wasm.step.dependOn(&install_demo_mesh.step);
+    verify_demo_wasm.step.dependOn(&install_demo_height.step);
+    verify_demo_wasm.step.dependOn(&install_demo_compound.step);
     const abi_schema_check = b.addSystemCommand(&.{ "node", "demo/web/scripts/generate-abi.mjs", "--check" });
     abi_schema_check.step.dependOn(&verify_demo_wasm.step);
     const demo_install = b.addSystemCommand(&.{ "node", "demo/web/scripts/install.mjs" });
@@ -521,7 +535,7 @@ pub fn build(b: *std.Build) void {
     vite_build.step.dependOn(&demo_install.step);
     demo.dependOn(&vite_build.step);
 
-    const demo_test = b.step("demo-test", "Run the Task 26 headless ABI, growth, lifecycle and parity smoke");
+    const demo_test = b.step("demo-test", "Run Task 27 ABI, case, rollback, lifecycle, DOM and screenshot tests");
     const playwright = b.addSystemCommand(&.{ "pnpm", "--dir", "demo/web", "run", "test" });
     playwright.step.dependOn(&vite_build.step);
     demo_test.dependOn(&playwright.step);
@@ -530,7 +544,7 @@ pub fn build(b: *std.Build) void {
     const consumer = b.addSystemCommand(&.{ "zig", "build", "--build-file", "tests/isolation/consumer/build.zig", "--cache-dir", ".zig-cache/demo-consumer" });
     demo_isolation.dependOn(&consumer.step);
 
-    const demo_run = b.step("demo-run", "Build and start the Task 26 local Vite server");
+    const demo_run = b.step("demo-run", "Build and start the Task 27 local React/Three demo");
     const vite_run = b.addSystemCommand(&.{ "pnpm", "--dir", "demo/web", "run", "dev" });
     vite_run.step.dependOn(&vite_build.step);
     demo_run.dependOn(&vite_run.step);

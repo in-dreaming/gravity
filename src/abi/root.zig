@@ -193,6 +193,7 @@ pub const WorldStats = extern struct {
     worker_count: u32,
     phase_visits: [11]u32,
 };
+pub const WorldFault = extern struct { struct_size: u32, reserved: u32, active: u32, phase: u32, code: u32, detail: u32, math_fault: u32, has_object: u32, tick: u64, object: u64 };
 
 pub const RunJobFn = *const fn (?*anyopaque, u32) callconv(.c) u32;
 pub const DispatchBatchFn = *const fn (?*anyopaque, u32, RunJobFn, ?*anyopaque) callconv(.c) u32;
@@ -214,6 +215,7 @@ pub const World = struct {
     in_call: u32,
     callback_violation: u32,
     last_error: u32,
+    last_fault: ?pipeline.RuntimeFault,
     reserved: u32,
     assets: *const AssetStore,
     simulation: config.SimulationConfig,
@@ -274,7 +276,7 @@ pub const World = struct {
 
 comptime {
     if (@sizeOf(Vec3) != 24 or @sizeOf(Quat) != 32 or @sizeOf(Transform) != 56 or @sizeOf(Hash128) != 16) @compileError("C ABI scalar layout drift");
-    if (@sizeOf(BodyDesc) != 128 or @sizeOf(BodyState) != 128 or @sizeOf(ColliderDesc) != 144 or @sizeOf(JointFrame) != 72 or @sizeOf(JointDesc) != 296 or @sizeOf(Command) != 144 or @sizeOf(Event) != 48 or @sizeOf(Filter) != 16 or @sizeOf(RayQuery) != 88 or @sizeOf(PointQuery) != 56 or @sizeOf(AabbQuery) != 80 or @sizeOf(ShapeQuery) != 232 or @sizeOf(ShapeCastQuery) != 256 or @sizeOf(QueryHit) != 80 or @sizeOf(WorldStats) != 84) @compileError("C ABI aggregate layout drift");
+    if (@sizeOf(BodyDesc) != 128 or @sizeOf(BodyState) != 128 or @sizeOf(ColliderDesc) != 144 or @sizeOf(JointFrame) != 72 or @sizeOf(JointDesc) != 296 or @sizeOf(Command) != 144 or @sizeOf(Event) != 48 or @sizeOf(Filter) != 16 or @sizeOf(RayQuery) != 88 or @sizeOf(PointQuery) != 56 or @sizeOf(AabbQuery) != 80 or @sizeOf(ShapeQuery) != 232 or @sizeOf(ShapeCastQuery) != 256 or @sizeOf(QueryHit) != 80 or @sizeOf(WorldStats) != 84 or @sizeOf(WorldFault) != 48) @compileError("C ABI aggregate layout drift");
     if (@offsetOf(BodyDesc, "transform") != 16 or @offsetOf(BodyDesc, "inverse_mass") != 72 or @offsetOf(BodyState, "id") != 8 or @offsetOf(BodyState, "transform") != 24 or @offsetOf(BodyState, "linear_velocity") != 80 or @offsetOf(BodyState, "angular_velocity") != 104 or @offsetOf(ColliderDesc, "body") != 8 or @offsetOf(ColliderDesc, "local") != 24 or @offsetOf(ColliderDesc, "dimensions") != 80 or @offsetOf(Command, "body") != 24 or @offsetOf(Command, "first") != 32 or @offsetOf(Command, "second") != 56 or @offsetOf(Command, "transform") != 80 or @offsetOf(QueryHit, "collider") != 8 or @offsetOf(QueryHit, "fraction") != 16 or @offsetOf(QueryHit, "point") != 24 or @offsetOf(QueryHit, "normal") != 48) @compileError("C ABI field layout drift");
     if (@import("builtin").target.cpu.arch == .wasm32 and (@sizeOf(AssetBlob) != 16 or @sizeOf(AssetStoreDesc) != 20 or @sizeOf(WorldDesc) != 104 or @offsetOf(AssetStoreDesc, "asset_count") != 12 or @offsetOf(WorldDesc, "assets") != 88 or @offsetOf(WorldDesc, "feature_flags") != 92)) @compileError("wasm32 C ABI layout drift");
 }
@@ -671,11 +673,11 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
     const sleep_graph = allocSlice(allocator, ids.BodyId, desc.body_capacity) catch return insufficient_memory;
     const wake_events = allocSlice(allocator, sleeping.Event, @as(usize, desc.body_capacity) * 2) catch return insufficient_memory;
     const sleep_events = allocSlice(allocator, sleeping.Event, @as(usize, desc.body_capacity) * 2) catch return insufficient_memory;
-    const ccd_enabled = allocSlice(allocator, bool, desc.body_capacity) catch return insufficient_memory;
-    const stage_ccd = allocSlice(allocator, bool, desc.body_capacity) catch return insufficient_memory;
+    const ccd_enabled = allocSlice(allocator, bool, desc.collider_capacity) catch return insufficient_memory;
+    const stage_ccd = allocSlice(allocator, bool, desc.collider_capacity) catch return insufficient_memory;
     @memset(ccd_enabled, false);
     @memset(stage_ccd, false);
-    const ccd_items = allocSlice(allocator, ccd.Item, desc.body_capacity) catch return insufficient_memory;
+    const ccd_items = allocSlice(allocator, ccd.Item, desc.collider_capacity) catch return insufficient_memory;
     const ccd_pairs = allocSlice(allocator, ccd.Pair, desc.contact_capacity) catch return insufficient_memory;
     const ccd_patches = allocSlice(allocator, contacts.Patch, desc.contact_capacity) catch return insufficient_memory;
     const ccd_merge_input = allocSlice(allocator, contacts.Patch, @as(usize, desc.contact_capacity) + 1) catch return insufficient_memory;
@@ -708,7 +710,7 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
     const contacts_payload = allocSlice(allocator, u8, @as(usize, desc.contact_capacity) * 512 + 256) catch return insufficient_memory;
     const joints_payload = allocSlice(allocator, u8, joint_storage_capacity * 512 + 256) catch return insufficient_memory;
     const sleep_payload = allocSlice(allocator, u8, @as(usize, desc.body_capacity) * 16 + 256) catch return insufficient_memory;
-    const ccd_payload = allocSlice(allocator, u8, @as(usize, desc.body_capacity) * 2 + 256) catch return insufficient_memory;
+    const ccd_payload = allocSlice(allocator, u8, @as(usize, desc.collider_capacity) * 2 + 256) catch return insufficient_memory;
     const snapshot_output = allocSlice(allocator, u8, pipeline_payload.len + bodies_payload.len + colliders_payload.len + contacts_payload.len + joints_payload.len + sleep_payload.len + ccd_payload.len + 2048) catch return insufficient_memory;
     result.* = .{
         .magic = world_magic,
@@ -716,6 +718,7 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
         .in_call = 0,
         .callback_violation = 0,
         .last_error = ok,
+        .last_fault = null,
         .reserved = 0,
         .assets = asset_store,
         .simulation = simulation,
@@ -843,6 +846,18 @@ pub export fn gravity_v1_world_last_error(world: ?*const World, out_error: ?*u32
     output.* = value.last_error;
     return ok;
 }
+pub export fn gravity_v1_world_last_fault(world: ?*const World, out_fault: ?*WorldFault) callconv(.c) u32 {
+    const value = checkedConst(world) orelse return invalid_state;
+    if (rejectCallbackReentry(value)) return reentrant;
+    const output = out_fault orelse return invalid_argument;
+    if (!validStruct(output)) return bad_struct;
+    const fault = value.last_fault orelse {
+        output.* = .{ .struct_size = @sizeOf(WorldFault), .reserved = 0, .active = 0, .phase = 0, .code = 0, .detail = 0, .math_fault = 0, .has_object = 0, .tick = 0, .object = 0 };
+        return ok;
+    };
+    output.* = .{ .struct_size = @sizeOf(WorldFault), .reserved = 0, .active = 1, .phase = @intFromEnum(fault.phase), .code = @intFromEnum(fault.code), .detail = @intFromEnum(fault.detail), .math_fault = @intFromEnum(fault.math_fault), .has_object = @intFromBool(fault.object != null), .tick = fault.tick, .object = fault.object orelse 0 };
+    return ok;
+}
 pub export fn gravity_v1_world_hash(world: ?*const World, out_hash: ?*Hash128) callconv(.c) u32 {
     const value = checkedConst(world) orelse return invalid_state;
     if (rejectCallbackReentry(value)) return reentrant;
@@ -880,6 +895,7 @@ pub export fn gravity_v1_world_step(world_ptr: ?*World, input: [*c]const Command
     var i: usize = 0;
     while (i < count) : (i += 1) world.commands[i] = convertCommand(input[i]) orelse return leave(world, bad_struct);
     const rollback_bytes = snapshotBytes(world) catch |err| return leave(world, mapError(err));
+    world.last_fault = null;
     var status = fp.MathStatus{};
     var workspace = pipeline.Workspace{ .commands = world.commands, .trace = world.trace, .diagnostics = if (world.feature_flags & world_feature_diagnostics != 0) &world.diagnostics else null };
     const stepped = (if (comptime abi_options.serial_wasm)
@@ -895,7 +911,9 @@ pub export fn gravity_v1_world_step(world_ptr: ?*World, input: [*c]const Command
         break :block pipeline.stepWithAnalyticSolver(&world.value, &world.state, world.simulation, world.commands[0..count], &workspace, &world.solver_pipeline, &status);
     }) catch |err| {
         const failure = mapError(err);
+        const runtime_fault = world.state.fault;
         restoreSnapshot(world, rollback_bytes) catch return leave(world, internal);
+        world.last_fault = runtime_fault;
         world.event_count = 0;
         return leave(world, failure);
     };
@@ -927,7 +945,6 @@ pub export fn gravity_v1_world_create_body(world_ptr: ?*World, desc_ptr: ?*const
     world.sleep_workspace.storage.awake[id.index()] = true;
     world.sleep_workspace.storage.counter[id.index()] = 0;
     world.sleep_workspace.storage.reason[id.index()] = .none;
-    @constCast(world.ccd_items.enabled)[id.index()] = false;
     output.* = id.value;
     return leave(world, ok);
 }
@@ -942,7 +959,7 @@ pub export fn gravity_v1_world_destroy_body(world_ptr: ?*World, id: u64) callcon
     } else {
         world.value.destroy(body) catch |err| return leave(world, mapError(err));
     }
-    @constCast(world.ccd_items.enabled)[index] = false;
+    _ = index;
     return leave(world, ok);
 }
 
@@ -1003,8 +1020,15 @@ pub export fn gravity_v1_world_set_body_ccd(world_ptr: ?*World, id: u64, enabled
     if (enabled > 1) return invalid_argument;
     const entered = enter(world);
     if (entered != ok) return entered;
-    const index = world.value.bodyIndex(.{ .value = id }) orelse return leave(world, invalid_id);
-    @constCast(world.ccd_items.enabled)[index] = enabled == 1;
+    const body_id = ids.BodyId{ .value = id };
+    _ = world.value.bodyIndex(body_id) orelse return leave(world, invalid_id);
+    const colliders = world.value.colliders.?;
+    var matched: usize = 0;
+    for (colliders.alive, colliders.body, 0..) |alive, owner, index| if (alive and owner.value == id) {
+        @constCast(world.ccd_items.enabled)[index] = enabled == 1;
+        matched += 1;
+    };
+    if (matched == 0) return leave(world, invalid_argument);
     return leave(world, ok);
 }
 
@@ -1017,7 +1041,8 @@ pub export fn gravity_v1_world_stats(world_ptr: ?*const World, out_stats: ?*Worl
     var awake_count: u32 = 0;
     for (world.value.storage.alive, 0..) |alive, index| if (alive) {
         body_count += 1;
-        if (world.feature_flags & world_feature_sleep == 0 or world.sleep_workspace.storage.awake[index]) awake_count += 1;
+        if (world.value.storage.body_type[index] == .dynamic and
+            (world.feature_flags & world_feature_sleep == 0 or world.sleep_workspace.storage.awake[index])) awake_count += 1;
     };
     var collider_count: u32 = 0;
     for (world.value.colliders.?.alive) |alive| if (alive) {
@@ -1084,6 +1109,7 @@ pub export fn gravity_v1_world_create_collider(world_ptr: ?*World, desc_ptr: ?*c
     if (entered != ok) return entered;
     const shape = shapeFrom(desc) orelse return leave(world, bad_struct);
     const id = world.value.createCollider(.{ .body = .{ .value = desc.body }, .local = transform(desc.local), .shape = shape, .material = .{ .friction = .{ .raw = desc.friction }, .restitution = .{ .raw = desc.restitution } }, .category = desc.category, .mask = desc.mask, .group = desc.group, .sensor = desc.flags & 1 != 0, .enabled = desc.flags & 2 == 0, .revision = desc.revision }) catch |err| return leave(world, mapError(err));
+    @constCast(world.ccd_items.enabled)[id.index()] = false;
     output.* = id.value;
     return leave(world, ok);
 }
@@ -1091,7 +1117,10 @@ pub export fn gravity_v1_world_destroy_collider(world_ptr: ?*World, id: u64) cal
     const world = checked(world_ptr) orelse return invalid_state;
     const entered = enter(world);
     if (entered != ok) return entered;
-    world.value.destroyCollider(.{ .value = id }) catch |err| return leave(world, mapError(err));
+    const collider_id = ids.ColliderId{ .value = id };
+    const index: usize = collider_id.index();
+    world.value.destroyCollider(collider_id) catch |err| return leave(world, mapError(err));
+    @constCast(world.ccd_items.enabled)[index] = false;
     return leave(world, ok);
 }
 pub export fn gravity_v1_world_events(world_ptr: ?*const World, output: [*c]Event, output_capacity: u32, out_required: ?*u32) callconv(.c) u32 {

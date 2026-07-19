@@ -389,8 +389,6 @@ test "extended ABI drives joints CCD diagnostics shape casts and full snapshots"
     var joint: u64 = 0;
     try expectOk(abi.gravity_v1_world_create_joint(world, &joint_desc, &joint));
     try std.testing.expect(joint != std.math.maxInt(u64));
-    try expectOk(abi.gravity_v1_world_set_body_ccd(world, dynamic_body, 1));
-
     var collider_desc = abi.ColliderDesc{
         .struct_size = @sizeOf(abi.ColliderDesc),
         .reserved = 0,
@@ -407,6 +405,14 @@ test "extended ABI drives joints CCD diagnostics shape casts and full snapshots"
         .group = 0,
         .revision = 1,
     };
+    collider_desc.body = dynamic_body;
+    collider_desc.category = 2;
+    var dynamic_collider: u64 = 0;
+    try expectOk(abi.gravity_v1_world_create_collider(world, &collider_desc, &dynamic_collider));
+    try std.testing.expect(dynamic_collider != std.math.maxInt(u64));
+    try expectOk(abi.gravity_v1_world_set_body_ccd(world, dynamic_body, 1));
+    collider_desc.body = static_body;
+    collider_desc.category = 1;
     var collider: u64 = 0;
     try expectOk(abi.gravity_v1_world_create_collider(world, &collider_desc, &collider));
     var cast = abi.ShapeCastQuery{
@@ -415,7 +421,7 @@ test "extended ABI drives joints CCD diagnostics shape casts and full snapshots"
         .shape = collider_desc,
         .start = defaultTransform(),
         .delta = .{ .x = 4 << 32, .y = 0, .z = 0 },
-        .filter = .{ .category = 1, .mask = std.math.maxInt(u32), .group = 0, .reserved = 0 },
+        .filter = .{ .category = 1, .mask = 1, .group = 0, .reserved = 0 },
         .mode = 1,
         .reserved1 = 0,
     };
