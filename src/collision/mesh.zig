@@ -575,24 +575,45 @@ pub fn meshMeshOverlaps(view_a: runtime_view.View, view_b: runtime_view.View, wo
 /// each body's transform is applied to BVH bounds and triangle vertices for
 /// this query. All scratch storage is supplied by the caller.
 pub fn meshMeshOverlapsTransformed(view_a: runtime_view.View, transform_a: @import("../math/geometry.zig").Transform3, view_b: runtime_view.View, transform_b: @import("../math/geometry.zig").Transform3, workspace: MeshMeshWorkspace, status: *fp.MathStatus) RuntimeError![]const PrimitivePair {
-    const mesh_a = try loadMeshBvh(view_a, workspace.nodes_a, workspace.primitives_a);
-    const mesh_b = try loadMeshBvh(view_b, workspace.nodes_b, workspace.primitives_b);
-    for (workspace.nodes_a[0..mesh_a.nodes.len]) |*node| node.bounds = transformBounds(node.bounds, transform_a, status);
-    for (workspace.nodes_b[0..mesh_b.nodes.len]) |*node| node.bounds = transformBounds(node.bounds, transform_b, status);
-    const candidates = try traverseBvhPairs(mesh_a.nodes, mesh_a.primitives, mesh_b.nodes, mesh_b.primitives, workspace.work, workspace.pair_scratch, workspace.pair_output);
+    const candidates = try meshMeshCandidatesTransformed(view_a, transform_a, view_b, transform_b, workspace, status);
     var required: usize = 0;
     for (candidates) |candidate| {
-        if (try meshTrianglesOverlap(view_a, transform_a, candidate.a, view_b, transform_b, candidate.b, status)) required += 1;
+        if (try meshTrianglePairOverlaps(view_a, transform_a, view_b, transform_b, candidate, status)) required += 1;
     }
     if (required > workspace.overlaps.len) return error.CapacityExceeded;
     var count: usize = 0;
     for (candidates) |candidate| {
-        if (try meshTrianglesOverlap(view_a, transform_a, candidate.a, view_b, transform_b, candidate.b, status)) {
+        if (try meshTrianglePairOverlaps(view_a, transform_a, view_b, transform_b, candidate, status)) {
             workspace.overlaps[count] = candidate;
             count += 1;
         }
     }
     return workspace.overlaps[0..count];
+}
+
+/// Produces the canonical BVH leaf-pair work list without classifying any
+/// triangle pair.  Task 23 uses this serial ownership freeze before fixed-slot
+/// parallel classification and stable compaction.
+pub fn meshMeshCandidatesTransformed(view_a: runtime_view.View, transform_a: @import("../math/geometry.zig").Transform3, view_b: runtime_view.View, transform_b: @import("../math/geometry.zig").Transform3, workspace: MeshMeshWorkspace, status: *fp.MathStatus) RuntimeError![]const PrimitivePair {
+    const mesh_a = try loadMeshBvh(view_a, workspace.nodes_a, workspace.primitives_a);
+    const mesh_b = try loadMeshBvh(view_b, workspace.nodes_b, workspace.primitives_b);
+    for (workspace.nodes_a[0..mesh_a.nodes.len]) |*node| node.bounds = transformBounds(node.bounds, transform_a, status);
+    for (workspace.nodes_b[0..mesh_b.nodes.len]) |*node| node.bounds = transformBounds(node.bounds, transform_b, status);
+    return traverseBvhPairs(mesh_a.nodes, mesh_a.primitives, mesh_b.nodes, mesh_b.primitives, workspace.work, workspace.pair_scratch, workspace.pair_output);
+}
+
+/// Exact one-candidate classifier for fixed-slot Task 23 jobs.
+pub fn meshTrianglePairOverlaps(view_a: runtime_view.View, transform_a: @import("../math/geometry.zig").Transform3, view_b: runtime_view.View, transform_b: @import("../math/geometry.zig").Transform3, pair: PrimitivePair, status: *fp.MathStatus) runtime_view.Error!bool {
+    return meshTrianglesOverlap(view_a, transform_a, pair.a, view_b, transform_b, pair.b, status);
+}
+
+/// Generates the deterministic contact owned by one already-classified pair.
+pub fn meshTrianglePairContact(view_a: runtime_view.View, transform_a: @import("../math/geometry.zig").Transform3, view_b: runtime_view.View, transform_b: @import("../math/geometry.zig").Transform3, pair: PrimitivePair, status: *fp.MathStatus) runtime_view.Error!gjk.ContactPoint {
+    const source_a = try view_a.triangle(pair.a);
+    const source_b = try view_b.triangle(pair.b);
+    const a = try transformedTriangle(view_a, transform_a, source_a, status);
+    const b = try transformedTriangle(view_b, transform_b, source_b, status);
+    return triangleTriangleContact(a, b, pair.a, pair.b, status) orelse unreachable;
 }
 
 /// Dynamic-safe Mesh--Mesh patch generation. It reuses the ordered exact SAT
@@ -603,11 +624,7 @@ pub fn meshMeshPatchTransformed(view_a: runtime_view.View, transform_a: @import(
     if (overlaps.len > workspace.contacts.len) return error.CapacityExceeded;
     var count: usize = 0;
     for (overlaps) |pair| {
-        const source_a = try view_a.triangle(pair.a);
-        const source_b = try view_b.triangle(pair.b);
-        const a = try transformedTriangle(view_a, transform_a, source_a, status);
-        const b = try transformedTriangle(view_b, transform_b, source_b, status);
-        workspace.contacts[count] = triangleTriangleContact(a, b, pair.a, pair.b, status) orelse unreachable;
+        workspace.contacts[count] = try meshTrianglePairContact(view_a, transform_a, view_b, transform_b, pair, status);
         count += 1;
     }
     return gjk.reducePatch(workspace.contacts[0..count], status);

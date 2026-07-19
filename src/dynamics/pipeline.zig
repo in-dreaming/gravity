@@ -933,6 +933,58 @@ fn narrowRuntimePairsTracked(world: *const world_mod.World, assets: *const store
 }
 
 const parallel_narrow_sentinel: u8 = std.math.maxInt(u8);
+const rejected_primitive_pair = mesh.PrimitivePair{ .a = std.math.maxInt(u32), .b = std.math.maxInt(u32) };
+
+/// Mesh topology traversal freezes one canonical primitive-pair list on the
+/// caller. Workers then classify fixed candidate slots, the caller compacts in
+/// candidate order, and a second fixed-slot pass fills exact contacts.
+fn meshMeshPatchRanges(workspace: *Workspace, view_a: runtime_view.View, transform_a: geometry.Transform3, view_b: runtime_view.View, transform_b: geometry.Transform3, mesh_workspace: mesh.MeshMeshPatchWorkspace, status: *fp.MathStatus) anyerror!gjk.ContactPatch {
+    const candidates = try mesh.meshMeshCandidatesTransformed(view_a, transform_a, view_b, transform_b, mesh_workspace.query, status);
+    if (candidates.len > mesh_workspace.query.pair_scratch.len) return error.CapacityExceeded;
+    const Classify = struct {
+        view_a: runtime_view.View,
+        transform_a: geometry.Transform3,
+        view_b: runtime_view.View,
+        transform_b: geometry.Transform3,
+        candidates: []const mesh.PrimitivePair,
+        staging: []mesh.PrimitivePair,
+
+        fn run(self: *@This(), range: jobs.Range, job_status: *fp.MathStatus) Error!void {
+            var index: usize = range.begin;
+            while (index < range.end) : (index += 1) {
+                const pair = self.candidates[index];
+                self.staging[index] = if (try mesh.meshTrianglePairOverlaps(self.view_a, self.transform_a, self.view_b, self.transform_b, pair, job_status)) pair else rejected_primitive_pair;
+            }
+        }
+    };
+    var classify = Classify{ .view_a = view_a, .transform_a = transform_a, .view_b = view_b, .transform_b = transform_b, .candidates = candidates, .staging = mesh_workspace.query.pair_scratch };
+    try dispatchRanges(workspace, candidates.len, &classify, status, Classify.run);
+
+    var overlap_count: usize = 0;
+    for (mesh_workspace.query.pair_scratch[0..candidates.len]) |pair| if (pair.a != rejected_primitive_pair.a or pair.b != rejected_primitive_pair.b) {
+        if (overlap_count == mesh_workspace.query.overlaps.len) return error.CapacityExceeded;
+        mesh_workspace.query.overlaps[overlap_count] = pair;
+        overlap_count += 1;
+    };
+    if (overlap_count > mesh_workspace.contacts.len) return error.CapacityExceeded;
+
+    const Fill = struct {
+        view_a: runtime_view.View,
+        transform_a: geometry.Transform3,
+        view_b: runtime_view.View,
+        transform_b: geometry.Transform3,
+        overlaps: []const mesh.PrimitivePair,
+        contacts: []gjk.ContactPoint,
+
+        fn run(self: *@This(), range: jobs.Range, job_status: *fp.MathStatus) Error!void {
+            var index: usize = range.begin;
+            while (index < range.end) : (index += 1) self.contacts[index] = try mesh.meshTrianglePairContact(self.view_a, self.transform_a, self.view_b, self.transform_b, self.overlaps[index], job_status);
+        }
+    };
+    var fill = Fill{ .view_a = view_a, .transform_a = transform_a, .view_b = view_b, .transform_b = transform_b, .overlaps = mesh_workspace.query.overlaps[0..overlap_count], .contacts = mesh_workspace.contacts };
+    try dispatchRanges(workspace, overlap_count, &fill, status, Fill.run);
+    return gjk.reducePatch(mesh_workspace.contacts[0..overlap_count], status);
+}
 
 /// Parallel analytic-pair front end. One fixed staging slot belongs to each
 /// broadphase pair; complex pairs retain the sentinel and are evaluated later
@@ -990,6 +1042,26 @@ fn narrowRuntimePairsRanges(workspace: *Workspace, world: *const world_mod.World
         const slot = &staging[pair_index];
         if (slot.len == parallel_narrow_sentinel) {
             if (fault_object) |object| object.* = pair.a.value;
+            const a = try colliderFor(world, pair.a);
+            const b = try colliderFor(world, pair.b);
+            if (a.collider.shape == .triangle_mesh and b.collider.shape == .triangle_mesh) {
+                const surface_workspace = surface orelse return error.InvalidContact;
+                const mesh_workspace = surface_workspace.mesh_mesh orelse return error.InvalidContact;
+                const a_body = world.bodyIndex(a.collider.body) orelse return error.InvalidBody;
+                const b_body = world.bodyIndex(b.collider.body) orelse return error.InvalidBody;
+                const a_transform = compose(.{ .position = world.storage.position[a_body], .orientation = world.storage.orientation[a_body] }, a.collider.local, status);
+                const b_transform = compose(.{ .position = world.storage.position[b_body], .orientation = world.storage.orientation[b_body] }, b.collider.local, status);
+                const source_a = a.collider.shape.triangle_mesh;
+                const source_b = b.collider.shape.triangle_mesh;
+                const view_a = try runtime_view.find(assets, if (source_a.source_id != 0) source_a.source_id else source_a.asset.index());
+                const view_b = try runtime_view.find(assets, if (source_b.source_id != 0) source_b.source_id else source_b.asset.index());
+                const patch = try meshMeshPatchRanges(workspace, view_a, a_transform, view_b, b_transform, mesh_workspace, status);
+                if (patch.len == 0) continue;
+                if (count == output.len) return error.CapacityExceeded;
+                output[count] = try cachePatchFromSurfaceResult(patch, .{ .collider_a = pair.a, .collider_b = pair.b, .shape_revision_a = a.collider.revision, .shape_revision_b = b.collider.revision }, a.collider.sensor or b.collider.sensor, false, status);
+                count += 1;
+                continue;
+            }
             const produced = try narrowRuntimePairsTracked(world, assets, pairs[pair_index .. pair_index + 1], convex, surface, output[count..], status, fault_object);
             count += produced.len;
             continue;
