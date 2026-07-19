@@ -5,6 +5,7 @@ import path from "node:path";
 
 const nativeTargets = ["windows-x86_64", "windows-aarch64", "linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64"];
 const excluded = new Set([".git", ".zig-cache", "zig-out", "node_modules", "playwright-report", "test-results", "bin", "obj"]);
+const generatedDirectory = /^(?:\.zig-cache|\.zig-global|zig-out)/;
 
 function octal(value, width) {
   const text = value.toString(8);
@@ -55,7 +56,7 @@ function tarHeader(entry) {
 async function addTree(entries, diskRoot, archiveRoot) {
   const names = (await readdir(diskRoot, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name, "en"));
   for (const item of names) {
-    if (excluded.has(item.name)) continue;
+    if (excluded.has(item.name) || generatedDirectory.test(item.name)) continue;
     const disk = path.join(diskRoot, item.name);
     const archive = `${archiveRoot}/${item.name}`.replaceAll("\\", "/");
     if (item.isDirectory()) await addTree(entries, disk, archive);
@@ -93,7 +94,7 @@ async function generate(prefix, version, commit) {
   const status = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: root, encoding: "utf8" });
   if (status !== "") throw new Error("release generation requires clean tracked source and submodule worktrees");
   const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
-  const unexpected = untracked.filter(name => !/^(?:\.zig-cache[^/]*|\.zig-global[^/]*|zig-out[^/]*)\//.test(name.replaceAll("\\", "/")));
+  const unexpected = untracked.filter(name => !/(?:^|\/)(?:\.zig-cache[^/]*|\.zig-global[^/]*|zig-out[^/]*)\//.test(name.replaceAll("\\", "/")));
   if (unexpected.length !== 0) throw new Error(`release generation found untracked source:\n${unexpected.join("\n")}`);
   const actualCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   if (actualCommit !== commit) throw new Error(`release commit mismatch: ${commit} != ${actualCommit}`);
