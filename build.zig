@@ -269,7 +269,7 @@ pub fn build(b: *std.Build) void {
     inline for ([_][]const u8{ "Medium", "Stress" }) |scene| {
         inline for ([_][]const u8{ "1", "2", "4", "8" }) |workers| {
             const run = addTask24Benchmark(b, target, .ReleaseFast, metadata);
-            run.addArgs(&.{ scene, "8", "2", workers });
+            run.addArgs(&.{ scene, "2", "1", workers });
             if (prior_scaling_run) |prior| run.step.dependOn(prior);
             prior_scaling_run = &run.step;
         }

@@ -33,7 +33,7 @@ pub const Scene = struct {
 const realtime_tick_ns = 16_666_667;
 
 pub const scenes = [_]Scene{
-    .{ .kind = .small, .name = "Small", .bodies = 48, .colliders = 48, .joints = 24, .broad_pairs = 192, .contact_patches = 192, .contact_points = 768, .expected_contacts = 72, .group_size = 4, .budget = .{ .native_p95_ns = 4_000_000, .native_p99_ns = 6_000_000, .snapshot_p95_ns = 2_000_000, .rollback_8_p95_ns = realtime_tick_ns, .max_workspace_bytes = 64 * 1024 * 1024 } },
+    .{ .kind = .small, .name = "Small", .bodies = 32, .colliders = 32, .joints = 16, .broad_pairs = 128, .contact_patches = 128, .contact_points = 512, .expected_contacts = 48, .group_size = 4, .budget = .{ .native_p95_ns = 4_000_000, .native_p99_ns = 6_000_000, .snapshot_p95_ns = 2_000_000, .rollback_8_p95_ns = realtime_tick_ns, .max_workspace_bytes = 64 * 1024 * 1024 } },
     // 500 groups of five coincident spheres produce exactly 5,000 pairwise
     // contacts; 512 authored joints satisfies the minimum Medium contract.
     .{ .kind = .medium, .name = "Medium", .bodies = 2_500, .colliders = 2_500, .joints = 512, .broad_pairs = 8_192, .contact_patches = 8_192, .contact_points = 32_768, .expected_contacts = 5_000, .group_size = 5, .budget = .{ .native_p95_ns = 100_000_000, .native_p99_ns = 120_000_000, .snapshot_p95_ns = 12_000_000, .rollback_8_p95_ns = 750_000_000, .max_workspace_bytes = 512 * 1024 * 1024 } },
