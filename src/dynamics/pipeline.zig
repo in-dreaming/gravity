@@ -938,7 +938,7 @@ const rejected_primitive_pair = mesh.PrimitivePair{ .a = std.math.maxInt(u32), .
 /// Mesh topology traversal freezes one canonical primitive-pair list on the
 /// caller. Workers then classify fixed candidate slots, the caller compacts in
 /// candidate order, and a second fixed-slot pass fills exact contacts.
-fn meshMeshPatchRanges(workspace: *Workspace, view_a: runtime_view.View, transform_a: geometry.Transform3, view_b: runtime_view.View, transform_b: geometry.Transform3, mesh_workspace: mesh.MeshMeshPatchWorkspace, status: *fp.MathStatus) anyerror!gjk.ContactPatch {
+pub fn meshMeshPatchRanges(workspace: *Workspace, view_a: runtime_view.View, transform_a: geometry.Transform3, view_b: runtime_view.View, transform_b: geometry.Transform3, mesh_workspace: mesh.MeshMeshPatchWorkspace, status: *fp.MathStatus) anyerror!gjk.ContactPatch {
     const candidates = try mesh.meshMeshCandidatesTransformed(view_a, transform_a, view_b, transform_b, mesh_workspace.query, status);
     if (candidates.len > mesh_workspace.query.pair_scratch.len) return error.CapacityExceeded;
     const Classify = struct {

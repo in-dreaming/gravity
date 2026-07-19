@@ -1,6 +1,10 @@
 const build_options = @import("build_options");
 const version = @import("version.zig");
 
+/// Frozen Task 22/23 logical batch contract. Native executor adapters remain
+/// outside core; physics imports only this ownership/synchronization surface.
+pub const jobs = @import("gravity_jobs");
+
 pub const math = struct {
     pub const fp = @import("math/fp.zig");
     pub const wide = @import("math/wide.zig");

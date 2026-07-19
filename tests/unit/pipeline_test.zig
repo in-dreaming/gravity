@@ -13,6 +13,7 @@ const baked = gravity.geometry.baked;
 const store = gravity.assets.store;
 const joints = gravity.dynamics.joints;
 const constraints = gravity.dynamics.constraints;
+const jobs = gravity.jobs;
 
 const Fixture = struct {
     types: [2]shapes.BodyType = undefined,
@@ -521,6 +522,69 @@ test "pipeline hull narrow rebuilds cached witnesses for the solver" {
     try std.testing.expect(cache.len > 0);
     try std.testing.expectEqual(pipeline.Phase.solve, stepped.step.trace[6]);
     try std.testing.expectEqual(pipeline.Phase.hash, stepped.step.trace[stepped.step.trace.len - 1]);
+}
+
+test "mesh primitive pair ranges match serial under reverse and permuted schedules" {
+    const triangle_count = 17;
+    const candidate_count = triangle_count * triangle_count;
+    const vertices = [_]g.Vec3{ .{ .x = fp.Fp.fromInt(-1), .z = fp.Fp.fromInt(-1) }, .{ .x = fp.Fp.fromInt(1), .z = fp.Fp.fromInt(-1) }, .{ .z = fp.Fp.fromInt(1) } };
+    var triangles: [triangle_count]baked.Triangle = undefined;
+    var primitives: [triangle_count]u32 = undefined;
+    for (&triangles, &primitives, 0..) |*triangle, *primitive, index| {
+        triangle.* = .{ .a = 0, .b = 1, .c = 2 };
+        primitive.* = @intCast(index);
+    }
+    const bounds = g.Aabb3{ .min = .{ .x = fp.Fp.fromInt(-1), .z = fp.Fp.fromInt(-1) }, .max = .{ .x = fp.Fp.fromInt(1), .z = fp.Fp.fromInt(1) } };
+    const nodes = [_]baked.BvhNode{baked.BvhNode.leaf(bounds, 0, triangle_count)};
+    var bytes_a: [8192]u8 = undefined;
+    var bytes_b: [8192]u8 = undefined;
+    var bake_scratch_a: [4096]u8 = undefined;
+    var bake_scratch_b: [4096]u8 = undefined;
+    const encoded_a = try baked.encodeMesh(.{ .source_id = 91, .vertices = &vertices, .triangles = &triangles, .nodes = &nodes, .primitives = &primitives }, &bytes_a, &bake_scratch_a);
+    const encoded_b = try baked.encodeMesh(.{ .source_id = 92, .vertices = &vertices, .triangles = &triangles, .nodes = &nodes, .primitives = &primitives }, &bytes_b, &bake_scratch_b);
+    var asset_memory: [20_000]u8 align(@alignOf(store.Asset)) = undefined;
+    const assets = try store.Store.init(&asset_memory, &.{ encoded_a.bytes, encoded_b.bytes });
+    const view_a = try gravity.assets.runtime_view.find(&assets, 91);
+    const view_b = try gravity.assets.runtime_view.find(&assets, 92);
+
+    var nodes_a: [1]baked.BvhNode = undefined;
+    var nodes_b: [1]baked.BvhNode = undefined;
+    var decoded_a: [triangle_count]u32 = undefined;
+    var decoded_b: [triangle_count]u32 = undefined;
+    var work: [1]mesh.NodePair = undefined;
+    var pair_scratch: [candidate_count]mesh.PrimitivePair = undefined;
+    var pair_output: [candidate_count]mesh.PrimitivePair = undefined;
+    var overlaps: [candidate_count]mesh.PrimitivePair = undefined;
+    var contacts: [candidate_count]gjk.ContactPoint = undefined;
+    const mesh_workspace = mesh.MeshMeshPatchWorkspace{ .query = .{ .nodes_a = &nodes_a, .primitives_a = &decoded_a, .nodes_b = &nodes_b, .primitives_b = &decoded_b, .work = &work, .pair_scratch = &pair_scratch, .pair_output = &pair_output, .overlaps = &overlaps }, .contacts = &contacts };
+    var status = fp.MathStatus{};
+    const golden = try mesh.meshMeshPatchTransformed(view_a, .{}, view_b, .{}, mesh_workspace, &status);
+    try std.testing.expectEqual(fp.MathFault.none, status.fault);
+    try std.testing.expectEqual(@as(u8, 4), golden.len);
+
+    const Host = struct {
+        order: jobs.TestDispatcher.Order,
+        max_jobs: u32 = 0,
+        fn dispatch(raw: *anyopaque, batch: jobs.Batch) jobs.Error!void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            self.max_jobs = @max(self.max_jobs, batch.job_count);
+            var scheduler = jobs.TestDispatcher{ .order = self.order };
+            var custom = scheduler.custom();
+            try custom.dispatch_fn(custom.context, batch);
+        }
+    };
+    inline for (.{ jobs.TestDispatcher.Order.reverse, jobs.TestDispatcher.Order.permuted }) |order| {
+        var host = Host{ .order = order };
+        var custom = jobs.Custom{ .context = &host, .dispatch_fn = Host.dispatch };
+        var commands: [0]world.Command = .{};
+        var trace: [0]pipeline.Phase = .{};
+        var step_workspace = pipeline.Workspace{ .commands = &commands, .trace = &trace, .dispatcher = .{ .custom = &custom } };
+        status = .{};
+        const actual = try pipeline.meshMeshPatchRanges(&step_workspace, view_a, .{}, view_b, .{}, mesh_workspace, &status);
+        try std.testing.expectEqual(fp.MathFault.none, status.fault);
+        try std.testing.expect(host.max_jobs > 1);
+        try std.testing.expectEqualDeep(golden, actual);
+    }
 }
 
 test "pipeline reversed convex mesh pair rebuilds solver witnesses" {
