@@ -183,25 +183,25 @@ pub const World = struct {
     /// Applies forces and torques to dynamic velocities for one substep.
     /// Constraint/contact solvers run after this stage and before positions.
     pub fn integrateVelocities(self: *World, dt: fp.Fp, status: *fp.MathStatus) void {
-        self.integrateLinearVelocity(dt, status, null);
-        self.integrateAngularVelocity(dt, status, null);
+        self.integrateLinearVelocityRange(0, self.storage.alive.len, dt, status, null);
+        self.integrateAngularVelocityRange(0, self.storage.alive.len, dt, status, null);
     }
     /// Applies one velocity stage only to awake dynamic body slots. The mask
     /// is caller-owned persistent sleep state and must match World capacity.
     pub fn integrateVelocitiesAwake(self: *World, awake: []const bool, dt: fp.Fp, status: *fp.MathStatus) Error!void {
         if (awake.len != self.storage.alive.len) return error.CapacityExceeded;
-        self.integrateLinearVelocity(dt, status, awake);
-        self.integrateAngularVelocity(dt, status, awake);
+        self.integrateLinearVelocityRange(0, self.storage.alive.len, dt, status, awake);
+        self.integrateAngularVelocityRange(0, self.storage.alive.len, dt, status, awake);
     }
     /// Advances dynamic positions and orientations from already-solved
     /// velocities for one substep.
     pub fn integratePositions(self: *World, dt: fp.Fp, status: *fp.MathStatus) void {
-        self.integratePositionState(dt, status, null);
+        self.integratePositionStateRange(0, self.storage.alive.len, dt, status, null);
     }
     /// Advances positions/orientations only for awake dynamic body slots.
     pub fn integratePositionsAwake(self: *World, awake: []const bool, dt: fp.Fp, status: *fp.MathStatus) Error!void {
         if (awake.len != self.storage.alive.len) return error.CapacityExceeded;
-        self.integratePositionState(dt, status, awake);
+        self.integratePositionStateRange(0, self.storage.alive.len, dt, status, awake);
     }
     /// Commits deferred kinematic targets once after all Tick substeps.
     pub fn finishTick(self: *World) void {
@@ -349,8 +349,25 @@ pub const World = struct {
             },
         }
     }
-    fn integrateLinearVelocity(self: *World, dt: fp.Fp, status: *fp.MathStatus, awake: ?[]const bool) void {
-        for (self.storage.alive, 0..) |alive, i| {
+    /// Integrates a caller-owned canonical body-slot range. Distinct ranges
+    /// write disjoint SoA elements and may execute concurrently.
+    pub fn integrateLinearVelocitySlots(self: *World, begin: usize, end: usize, awake: ?[]const bool, dt: fp.Fp, status: *fp.MathStatus) Error!void {
+        if (begin > end or end > self.storage.alive.len) return error.CapacityExceeded;
+        if (awake) |mask| if (mask.len != self.storage.alive.len) return error.CapacityExceeded;
+        self.integrateLinearVelocityRange(begin, end, dt, status, awake);
+    }
+    pub fn integrateAngularVelocitySlots(self: *World, begin: usize, end: usize, awake: ?[]const bool, dt: fp.Fp, status: *fp.MathStatus) Error!void {
+        if (begin > end or end > self.storage.alive.len) return error.CapacityExceeded;
+        if (awake) |mask| if (mask.len != self.storage.alive.len) return error.CapacityExceeded;
+        self.integrateAngularVelocityRange(begin, end, dt, status, awake);
+    }
+    pub fn integratePositionSlots(self: *World, begin: usize, end: usize, awake: ?[]const bool, dt: fp.Fp, status: *fp.MathStatus) Error!void {
+        if (begin > end or end > self.storage.alive.len) return error.CapacityExceeded;
+        if (awake) |mask| if (mask.len != self.storage.alive.len) return error.CapacityExceeded;
+        self.integratePositionStateRange(begin, end, dt, status, awake);
+    }
+    fn integrateLinearVelocityRange(self: *World, begin: usize, end: usize, dt: fp.Fp, status: *fp.MathStatus, awake: ?[]const bool) void {
+        for (self.storage.alive[begin..end], begin..) |alive, i| {
             if (!alive or self.storage.body_type[i] != .dynamic or (awake != null and !awake.?[i])) continue;
             const a = self.settings.gravity.add(self.storage.force[i].scale(self.storage.inverse_mass[i], status), status);
             self.storage.linear_velocity[i] = self.storage.linear_velocity[i].add(a.scale(dt, status), status).scale(fp.Fp.one.sub(self.settings.linear_damping.mul(dt, status), status), status);
@@ -359,8 +376,8 @@ pub const World = struct {
             self.storage.force[i] = .{};
         }
     }
-    fn integrateAngularVelocity(self: *World, dt: fp.Fp, status: *fp.MathStatus, awake: ?[]const bool) void {
-        for (self.storage.alive, 0..) |alive, i| {
+    fn integrateAngularVelocityRange(self: *World, begin: usize, end: usize, dt: fp.Fp, status: *fp.MathStatus, awake: ?[]const bool) void {
+        for (self.storage.alive[begin..end], begin..) |alive, i| {
             if (!alive or self.storage.body_type[i] != .dynamic or (awake != null and !awake.?[i])) continue;
             const inv_world = self.storage.inverse_inertia_local[i].rotate(self.storage.orientation[i], status).toMat3();
             const inertia = inv_world.inverse(status);
@@ -373,8 +390,8 @@ pub const World = struct {
             self.storage.torque[i] = .{};
         }
     }
-    fn integratePositionState(self: *World, dt: fp.Fp, status: *fp.MathStatus, awake: ?[]const bool) void {
-        for (self.storage.alive, 0..) |alive, i| {
+    fn integratePositionStateRange(self: *World, begin: usize, end: usize, dt: fp.Fp, status: *fp.MathStatus, awake: ?[]const bool) void {
+        for (self.storage.alive[begin..end], begin..) |alive, i| {
             if (!alive or self.storage.body_type[i] != .dynamic or (awake != null and !awake.?[i])) continue;
             self.storage.position[i] = self.storage.position[i].add(self.storage.linear_velocity[i].scale(dt, status), status);
             self.storage.orientation[i] = self.storage.orientation[i].integrate(self.storage.angular_velocity[i], dt, status);

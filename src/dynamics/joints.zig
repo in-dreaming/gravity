@@ -313,6 +313,39 @@ pub fn solveRowsIteration(world: *body_world.World, rows: []constraints.Constrai
         applyRowImpulse(world, row.*, row.accumulated_impulse.sub(old, status), status);
     }
 }
+
+/// Applies warm-start impulses for the canonical rows owned by one dynamic
+/// island. Static and kinematic endpoints are read-only and therefore do not
+/// participate in island membership.
+pub fn warmStartRowsForIsland(world: *body_world.World, rows: []const constraints.ConstraintRow, members: []const ids.BodyId, status: *fp.MathStatus) void {
+    for (rows) |row| if (rowBelongsToIsland(world, row, members)) applyRowImpulse(world, row, row.accumulated_impulse, status);
+}
+
+/// Solves one PGS iteration for one island while retaining the global
+/// canonical row order. Independent calls write disjoint dynamic body and row
+/// sets, so their execution order cannot affect the result.
+pub fn solveRowsIterationForIsland(world: *body_world.World, rows: []constraints.ConstraintRow, members: []const ids.BodyId, status: *fp.MathStatus) void {
+    for (rows) |*row| {
+        if (!rowBelongsToIsland(world, row.*, members)) continue;
+        const velocity = rowVelocity(world, row.*, status);
+        const correction = velocity.add(row.bias, status).add(row.softness.mul(row.accumulated_impulse, status), status).neg(status).mul(row.effective_mass, status);
+        const old = row.accumulated_impulse;
+        row.accumulated_impulse = clamp(old.add(correction, status), row.lower, row.upper);
+        applyRowImpulse(world, row.*, row.accumulated_impulse.sub(old, status), status);
+    }
+}
+
+fn rowBelongsToIsland(world: *const body_world.World, row: constraints.ConstraintRow, members: []const ids.BodyId) bool {
+    const a = world.bodyIndex(row.key.min_body) orelse return false;
+    if (world.storage.body_type[a] == .dynamic) return containsBody(members, row.key.min_body);
+    const b = world.bodyIndex(row.key.max_body) orelse return false;
+    return world.storage.body_type[b] == .dynamic and containsBody(members, row.key.max_body);
+}
+
+fn containsBody(members: []const ids.BodyId, body: ids.BodyId) bool {
+    for (members) |member| if (member.value == body.value) return true;
+    return false;
+}
 /// Builds all baseline and active control rows for one joint. `scratch` is
 /// caller-owned temporary storage and must hold twice the documented maximum
 /// row count, keeping capacity failure and intermediate producers invisible to

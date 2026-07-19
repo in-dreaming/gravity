@@ -46,6 +46,40 @@ pub fn solveWithJointRows(world: *body_world.World, joint_rows: []constraints.Co
     i = 0;
     while (i < settings.position_iterations) : (i += 1) for (contacts) |contact| solveSplitContact(world, contact, pseudo, settings, status);
 }
+
+/// Solves one independently writable dynamic island. The caller validates the
+/// complete contact/row streams and clears the global pseudo buffers before
+/// dispatch. Scanning those canonical streams preserves the released island-
+/// local PGS order without building worker-dependent append buffers.
+pub fn solveIslandWithJointRows(world: *body_world.World, members: []const ids.BodyId, joint_rows: []constraints.ConstraintRow, contacts: []const Contact, pseudo: PseudoVelocities, settings: Settings, status: *fp.MathStatus) void {
+    for (members) |body| {
+        const index = world.bodyIndex(body).?;
+        pseudo.linear[index] = .zero;
+        pseudo.angular[index] = .zero;
+    }
+    joints.warmStartRowsForIsland(world, joint_rows, members, status);
+    for (contacts) |contact| if (contactBelongsToIsland(world, contact, members)) warmStart(world, contact, status);
+    for (contacts) |contact| if (contactBelongsToIsland(world, contact, members)) prepareRestitution(world, contact, settings, status);
+    var i: u8 = 0;
+    while (i < settings.velocity_iterations) : (i += 1) {
+        joints.solveRowsIterationForIsland(world, joint_rows, members, status);
+        for (contacts) |contact| if (contactBelongsToIsland(world, contact, members)) solveVelocityContact(world, contact, status);
+    }
+    i = 0;
+    while (i < settings.position_iterations) : (i += 1) for (contacts) |contact| if (contactBelongsToIsland(world, contact, members)) solveSplitContact(world, contact, pseudo, settings, status);
+}
+
+fn contactBelongsToIsland(world: *const body_world.World, contact: Contact, members: []const ids.BodyId) bool {
+    const a = world.bodyIndex(contact.body_a).?;
+    if (world.storage.body_type[a] == .dynamic) return containsBody(members, contact.body_a);
+    const b = world.bodyIndex(contact.body_b).?;
+    return world.storage.body_type[b] == .dynamic and containsBody(members, contact.body_b);
+}
+
+fn containsBody(members: []const ids.BodyId, body: ids.BodyId) bool {
+    for (members) |member| if (member.value == body.value) return true;
+    return false;
+}
 /// Solves a contact introduced after the ordinary substep warm-start (for
 /// example a CCD TOI). Joint rows retain their accumulated impulses and are
 /// therefore deliberately not warm-started a second time.  The same fixed

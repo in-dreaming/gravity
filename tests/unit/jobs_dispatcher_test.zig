@@ -197,6 +197,32 @@ const SpindleHost = struct {
     };
 };
 
+const TestHost = struct {
+    scheduler: contract.TestDispatcher,
+    max_job_count: u32 = 0,
+
+    fn dispatch(user: ?*anyopaque, job_count: u32, run_job: abi.RunJobFn, batch_context: ?*anyopaque) callconv(.c) u32 {
+        const self: *TestHost = @ptrCast(@alignCast(user orelse return abi.invalid_argument));
+        self.max_job_count = @max(self.max_job_count, job_count);
+        var bridge = SpindleHost.Bridge{ .run_job = run_job, .batch_context = batch_context };
+        var custom = self.scheduler.custom();
+        const dispatcher = contract.Dispatcher{ .custom = &custom };
+        dispatcher.dispatch(.{ .context = &bridge, .job_count = job_count, .run = SpindleHost.Bridge.run }) catch return abi.callback_error;
+        return abi.ok;
+    }
+};
+
+const FaultHost = struct {
+    fn dispatch(user: ?*anyopaque, job_count: u32, run_job: abi.RunJobFn, batch_context: ?*anyopaque) callconv(.c) u32 {
+        _ = @as(*FaultHost, @ptrCast(@alignCast(user orelse return abi.invalid_argument)));
+        var index: u32 = 0;
+        while (index < job_count) : (index += 1) {
+            if (run_job(batch_context, index) != abi.ok) return abi.callback_error;
+        }
+        return if (job_count > 1) abi.callback_error else abi.ok;
+    }
+};
+
 fn expectAbi(result: u32) !void {
     if (result != abi.ok) return error.AbiFailure;
 }
@@ -204,7 +230,7 @@ fn identityTransform() abi.Transform {
     return .{ .position = .{ .x = 0, .y = 0, .z = 0 }, .orientation = .{ .x = 0, .y = 0, .z = 0, .w = 1 << 32 } };
 }
 
-test "production ABI pipeline hash matches serial across Spindle worker counts and backend switches" {
+test "production multi-range ABI pipeline hash matches serial across Spindle worker counts and backend switches" {
     const allocator = std.testing.allocator;
     var asset_desc = abi.AssetStoreDesc{ .struct_size = @sizeOf(abi.AssetStoreDesc), .reserved = 0, .assets = null, .asset_count = 0, .reserved1 = 0 };
     var asset_size: u64 = 0;
@@ -219,8 +245,8 @@ test "production ABI pipeline hash matches serial across Spindle worker counts a
     var world_desc = abi.WorldDesc{
         .struct_size = @sizeOf(abi.WorldDesc),
         .reserved = 0,
-        .body_capacity = 2,
-        .collider_capacity = 2,
+        .body_capacity = 300,
+        .collider_capacity = 65,
         .command_capacity = 2,
         .contact_capacity = 2,
         .gravity = .{ .x = 0, .y = -(1 << 32), .z = 0 },
@@ -255,7 +281,49 @@ test "production ABI pipeline hash matches serial across Spindle worker counts a
         .inverse_inertia_yz = 0,
     };
     var body: u64 = 0;
-    try expectAbi(abi.gravity_v1_world_create_body(world, &body_desc, &body));
+    var collider_desc = abi.ColliderDesc{
+        .struct_size = @sizeOf(abi.ColliderDesc),
+        .reserved = 0,
+        .body = 0,
+        .shape_kind = 0,
+        .flags = 0,
+        .local = identityTransform(),
+        .dimensions = .{ .x = 1 << 32, .y = 0, .z = 0 },
+        .asset_source_id = 0,
+        .friction = 1 << 32,
+        .restitution = 0,
+        .category = 1,
+        .mask = std.math.maxInt(u32),
+        .group = 0,
+        .revision = 1,
+    };
+    var collider: u64 = 0;
+    for (0..8) |index| {
+        body_desc.transform.position.x = (@as(i64, @intCast(index)) * 4) << 32;
+        try expectAbi(abi.gravity_v1_world_create_body(world, &body_desc, &body));
+    }
+    var static_desc = body_desc;
+    static_desc.body_type = 0;
+    static_desc.transform = identityTransform();
+    static_desc.inverse_mass = 0;
+    static_desc.inverse_inertia_xx = 0;
+    static_desc.inverse_inertia_yy = 0;
+    static_desc.inverse_inertia_zz = 0;
+    try expectAbi(abi.gravity_v1_world_create_body(world, &static_desc, &body));
+    collider_desc.body = body;
+    for (0..65) |index| {
+        collider_desc.local.position.x = (@as(i64, @intCast(index)) * 4) << 32;
+        try expectAbi(abi.gravity_v1_world_create_collider(world, &collider_desc, &collider));
+    }
+
+    var point_query = abi.PointQuery{ .struct_size = @sizeOf(abi.PointQuery), .reserved = 0, .point = .{ .x = 0, .y = 0, .z = 0 }, .filter = .{ .category = 1, .mask = std.math.maxInt(u32), .group = 0, .reserved = 0 }, .mode = 2, .reserved1 = 0 };
+    var ray_query = abi.RayQuery{ .struct_size = @sizeOf(abi.RayQuery), .reserved = 0, .origin = .{ .x = -(2 << 32), .y = 0, .z = 0 }, .direction = .{ .x = 300 << 32, .y = 0, .z = 0 }, .max_fraction = 1 << 32, .filter = .{ .category = 1, .mask = std.math.maxInt(u32), .group = 0, .reserved = 0 }, .mode = 1, .reserved1 = 0 };
+    var query_hits: [1]abi.QueryHit = undefined;
+    var query_required: u32 = 0;
+    try expectAbi(abi.gravity_v1_world_query_point(world, &point_query, &query_hits, query_hits.len, &query_required));
+    try std.testing.expectEqual(@as(u32, 1), query_required);
+    try expectAbi(abi.gravity_v1_world_query_ray(world, &ray_query, &query_hits, query_hits.len, &query_required));
+    try std.testing.expectEqual(@as(u32, 1), query_required);
 
     var snapshot_size: u64 = 0;
     try expectAbi(abi.gravity_v1_world_snapshot_size(world, &snapshot_size));
@@ -269,12 +337,45 @@ test "production ABI pipeline hash matches serial across Spindle worker counts a
         try expectAbi(abi.gravity_v1_world_hash(world, expected));
     }
 
+    try expectAbi(abi.gravity_v1_world_snapshot_load(world, snapshot.ptr, snapshot.len));
+    var before_failure: abi.Hash128 = undefined;
+    try expectAbi(abi.gravity_v1_world_hash(world, &before_failure));
+    var fault_host = FaultHost{};
+    var fault_dispatcher = abi.Dispatcher{ .struct_size = @sizeOf(abi.Dispatcher), .reserved = 0, .user = &fault_host, .dispatch_batch = FaultHost.dispatch };
+    try expectAbi(abi.gravity_v1_world_set_dispatcher(world, &fault_dispatcher));
+    try std.testing.expectEqual(abi.callback_error, abi.gravity_v1_world_step(world, null, 0));
+    var after_failure: abi.Hash128 = undefined;
+    try expectAbi(abi.gravity_v1_world_hash(world, &after_failure));
+    try std.testing.expectEqualSlices(u8, &before_failure.bytes, &after_failure.bytes);
+    try expectAbi(abi.gravity_v1_world_set_dispatcher(world, null));
+
+    inline for (.{ contract.TestDispatcher.Order.reverse, contract.TestDispatcher.Order.permuted }) |order| {
+        try expectAbi(abi.gravity_v1_world_snapshot_load(world, snapshot.ptr, snapshot.len));
+        var host = TestHost{ .scheduler = .{ .order = order } };
+        var dispatcher = abi.Dispatcher{ .struct_size = @sizeOf(abi.Dispatcher), .reserved = 0, .user = &host, .dispatch_batch = TestHost.dispatch };
+        try expectAbi(abi.gravity_v1_world_set_dispatcher(world, &dispatcher));
+        host.max_job_count = 0;
+        try expectAbi(abi.gravity_v1_world_query_point(world, &point_query, &query_hits, query_hits.len, &query_required));
+        try std.testing.expectEqual(@as(u32, 1), query_required);
+        try expectAbi(abi.gravity_v1_world_query_ray(world, &ray_query, &query_hits, query_hits.len, &query_required));
+        try std.testing.expectEqual(@as(u32, 1), query_required);
+        try std.testing.expect(host.max_job_count >= 3);
+        for (golden) |expected| {
+            try expectAbi(abi.gravity_v1_world_step(world, null, 0));
+            var actual: abi.Hash128 = undefined;
+            try expectAbi(abi.gravity_v1_world_hash(world, &actual));
+            try std.testing.expectEqualSlices(u8, &expected.bytes, &actual.bytes);
+        }
+        try std.testing.expect(host.max_job_count >= 8);
+        try expectAbi(abi.gravity_v1_world_set_dispatcher(world, null));
+    }
+
     for ([_]usize{ 1, 2, 4, 8 }) |workers| {
         try expectAbi(abi.gravity_v1_world_snapshot_load(world, snapshot.ptr, snapshot.len));
-        var executor = try spindle.executor.WorkStealingExecutor.init(allocator, .{ .workers = workers, .local_capacity = 8, .injection_capacity = 8, .urgent_capacity = 4 });
+        var executor = try spindle.executor.WorkStealingExecutor.init(allocator, .{ .workers = workers, .local_capacity = 64, .injection_capacity = 128, .urgent_capacity = 16 });
         errdefer executor.deinit();
-        var slots: [1]spindle_adapter.Dispatcher.Slot = undefined;
-        var adapter = spindle_adapter.Dispatcher.init(&executor, &slots, 4);
+        var slots: [64]spindle_adapter.Dispatcher.Slot = undefined;
+        var adapter = spindle_adapter.Dispatcher.init(&executor, &slots, 64);
         var host = SpindleHost{ .adapter = &adapter };
         var dispatcher = abi.Dispatcher{ .struct_size = @sizeOf(abi.Dispatcher), .reserved = 0, .user = &host, .dispatch_batch = SpindleHost.dispatch };
         try expectAbi(abi.gravity_v1_world_set_dispatcher(world, &dispatcher));

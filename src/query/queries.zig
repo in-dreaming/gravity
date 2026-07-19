@@ -705,6 +705,13 @@ pub fn rayPrimitives(ray: Ray, filter: Filter, items: []const Item, candidates: 
     return publish(mode, candidates[0..count], output);
 }
 
+/// One analytic target evaluation used by deterministic fixed-slot query
+/// batches. Asset-backed and Compound targets retain the full traversal API.
+pub fn rayPrimitive(ray: Ray, item: Item, status: *fp.MathStatus) Error!?Hit {
+    const hit = try rayShape(ray, item.collider.shape, item.transform, status) orelse return null;
+    return .{ .fraction = hit.fraction, .collider = item.id, .primitive = 0, .feature = hit.feature, .point = hit.point, .normal = hit.normal };
+}
+
 /// Full ray query for analytic primitives, immutable assets and Compound
 /// leaves.  Mesh hits retain their baked triangle ID; Compound hits retain
 /// the complete child path.  Surface tests are exact; BVHs only reject

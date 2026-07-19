@@ -180,6 +180,7 @@ pub const World = struct {
     query_items: []queries.Item,
     query_candidates: []queries.Hit,
     query_output: []queries.Hit,
+    query_flags: []u8,
     query_u32_a: []u32,
     query_u32_b: []u32,
     query_mesh_hits: []queries.MeshRayHit,
@@ -479,7 +480,7 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
     simulation.iterations.substeps = desc.substeps;
     simulation.iterations.tick_hz = desc.tick_hz;
     const command_buffer = allocSlice(allocator, world_mod.Command, desc.command_capacity) catch return insufficient_memory;
-    const host_dispatch_seen = allocSlice(allocator, u8, desc.command_capacity) catch return insufficient_memory;
+    const host_dispatch_seen = allocSlice(allocator, u8, jobs.maximum_batch_jobs) catch return insufficient_memory;
     const trace = allocSlice(allocator, pipeline.Phase, 64) catch return insufficient_memory;
     const cache_patches = allocSlice(allocator, contacts.Patch, desc.contact_capacity) catch return insufficient_memory;
     const collider_views = allocSlice(allocator, shapes.Collider, desc.collider_capacity) catch return insufficient_memory;
@@ -524,6 +525,7 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
     const query_capacity = @max(desc.collider_capacity, desc.contact_capacity);
     const query_candidates = allocSlice(allocator, queries.Hit, query_capacity) catch return insufficient_memory;
     const query_output = allocSlice(allocator, queries.Hit, query_capacity) catch return insufficient_memory;
+    const query_flags = allocSlice(allocator, u8, desc.collider_capacity) catch return insufficient_memory;
     const query_u32_a = allocSlice(allocator, u32, query_capacity) catch return insufficient_memory;
     const query_u32_b = allocSlice(allocator, u32, query_capacity) catch return insufficient_memory;
     const query_mesh_hits = allocSlice(allocator, queries.MeshRayHit, query_capacity) catch return insufficient_memory;
@@ -573,6 +575,7 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
         .query_items = query_items,
         .query_candidates = query_candidates,
         .query_output = query_output,
+        .query_flags = query_flags,
         .query_u32_a = query_u32_a,
         .query_u32_b = query_u32_b,
         .query_mesh_hits = query_mesh_hits,
@@ -844,17 +847,146 @@ pub export fn gravity_v1_world_query_ray(world_ptr: ?*World, query_ptr: ?*const 
     const f = filter(query.filter) orelse return leave(world, bad_struct);
     var status = fp.MathStatus{};
     const count = collectItems(world);
-    const publication = queries.rayShapes(.{ .origin = vec(query.origin), .delta = vec(query.direction).scale(.{ .raw = query.max_fraction }, &status) }, f, world.query_items[0..count], &world.assets.value, rayWorkspace(world), world.query_candidates, world.query_output, m, &status) catch |err| return leave(world, mapError(err));
+    const ray = queries.Ray{ .origin = vec(query.origin), .delta = vec(query.direction).scale(.{ .raw = query.max_fraction }, &status) };
+    var analytic_only = true;
+    for (world.query_items[0..count]) |item| switch (item.collider.shape) {
+        .sphere, .box, .capsule => {},
+        else => analytic_only = false,
+    };
+    const publication = if (!analytic_only) queries.rayShapes(ray, f, world.query_items[0..count], &world.assets.value, rayWorkspace(world), world.query_candidates, world.query_output, m, &status) catch |err| return leave(world, mapError(err)) else block: {
+        const plan = jobs.RangePlan.initBounded(count, 32, jobs.maximum_batch_jobs) catch return leave(world, capacity);
+        const Kernel = struct {
+            ray: queries.Ray,
+            filter: queries.Filter,
+            items: []const queries.Item,
+            slots: []queries.Hit,
+            flags: []u8,
+            plan: jobs.RangePlan,
+            errors: [jobs.maximum_batch_jobs]u32 = [_]u32{ok} ** jobs.maximum_batch_jobs,
+            statuses: [jobs.maximum_batch_jobs]fp.MathStatus = [_]fp.MathStatus{.{}} ** jobs.maximum_batch_jobs,
+            fn run(raw: *anyopaque, logical_job: u32) !void {
+                const self: *@This() = @ptrCast(@alignCast(raw));
+                const range = self.plan.range(logical_job) catch {
+                    self.errors[logical_job] = internal;
+                    return error.CallbackFailed;
+                };
+                var index: usize = range.begin;
+                while (index < range.end) : (index += 1) {
+                    self.flags[index] = 0;
+                    const item = self.items[index];
+                    if (!queries.passesFilter(self.filter, item.collider)) continue;
+                    self.slots[index] = queries.rayPrimitive(self.ray, item, &self.statuses[logical_job]) catch |err| {
+                        self.errors[logical_job] = mapError(err);
+                        return error.CallbackFailed;
+                    } orelse continue;
+                    self.flags[index] = 1;
+                }
+            }
+        };
+        var kernel = Kernel{ .ray = ray, .filter = f, .items = world.query_items[0..count], .slots = world.query_candidates[0..count], .flags = world.query_flags[0..count], .plan = plan };
+        if (plan.job_count != 0) {
+            var host: host_jobs.Dispatcher = undefined;
+            var custom: jobs.Custom = undefined;
+            var dispatcher = jobs.Dispatcher{ .serial = {} };
+            if (world.dispatcher.dispatch_batch) |callback| {
+                host = .{ .user = world.dispatcher.user, .dispatch_batch = callback, .seen = world.host_dispatch_seen };
+                custom = host.custom();
+                dispatcher = .{ .custom = &custom };
+            }
+            dispatcher.dispatch(.{ .context = &kernel, .job_count = plan.job_count, .run = Kernel.run }) catch {
+                for (kernel.errors[0..plan.job_count]) |failure| if (failure != ok) return leave(world, failure);
+                return leave(world, callback_error);
+            };
+            if (world.callback_violation != 0) return leave(world, callback_error);
+            for (kernel.errors[0..plan.job_count]) |failure| if (failure != ok) return leave(world, failure);
+            for (kernel.statuses[0..plan.job_count]) |job_status| {
+                if (status.fault == .none and job_status.fault != .none) status.fault = job_status.fault;
+            }
+        }
+        var found: usize = 0;
+        for (world.query_flags[0..count], 0..) |flag, index| if (flag == 1) {
+            world.query_candidates[found] = world.query_candidates[index];
+            found += 1;
+        };
+        break :block queries.publish(m, world.query_candidates[0..found], world.query_output) catch |err| return leave(world, mapError(err));
+    };
     return leave(world, writeHits(publication, output, output_capacity, required));
 }
 
 fn overlapQuery(world: *World, query_filter: queries.Filter, query_mode: queries.Mode, kind: enum { point, aabb, shape }, point: g.Vec3, bounds: g.Aabb3, shape: shapes.Shape, shape_transform: g.Transform3, output: [*c]QueryHit, output_capacity: u32, required: *u32) u32 {
     const count = collectItems(world);
-    var found: usize = 0;
     var status = fp.MathStatus{};
-    for (world.query_items[0..count]) |item| {
-        if (!queries.passesFilter(query_filter, item.collider)) continue;
-        const hit = switch (kind) {
+    const plan = jobs.RangePlan.initBounded(count, 32, jobs.maximum_batch_jobs) catch return capacity;
+    const Kernel = struct {
+        world: *World,
+        items: []const queries.Item,
+        flags: []u8,
+        filter: queries.Filter,
+        kind: @TypeOf(kind),
+        point: g.Vec3,
+        bounds: g.Aabb3,
+        shape: shapes.Shape,
+        shape_transform: g.Transform3,
+        plan: jobs.RangePlan,
+        errors: [jobs.maximum_batch_jobs]u32 = [_]u32{ok} ** jobs.maximum_batch_jobs,
+        statuses: [jobs.maximum_batch_jobs]fp.MathStatus = [_]fp.MathStatus{.{}} ** jobs.maximum_batch_jobs,
+
+        fn run(raw: *anyopaque, logical_job: u32) !void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            const range = self.plan.range(logical_job) catch {
+                self.errors[logical_job] = internal;
+                return error.CallbackFailed;
+            };
+            var index: usize = range.begin;
+            while (index < range.end) : (index += 1) {
+                const item = self.items[index];
+                self.flags[index] = 0;
+                if (!queries.passesFilter(self.filter, item.collider)) continue;
+                // Asset-backed targets require shared traversal scratch and are
+                // deliberately deferred to the canonical serial merge below.
+                switch (item.collider.shape) {
+                    .sphere, .box, .capsule => {},
+                    else => {
+                        self.flags[index] = 2;
+                        continue;
+                    },
+                }
+                const hit = switch (self.kind) {
+                    .point => queries.pointOverlapsPrimitive(self.point, item.collider.shape, item.transform, &self.statuses[logical_job]),
+                    .aabb => queries.aabbOverlapsConvex(self.bounds, item.collider.shape, item.transform, &self.world.assets.value, &self.statuses[logical_job]),
+                    .shape => queries.convexOverlaps(self.shape, self.shape_transform, item.collider.shape, item.transform, &self.world.assets.value, &self.statuses[logical_job]),
+                } catch |err| {
+                    self.errors[logical_job] = mapError(err);
+                    return error.CallbackFailed;
+                };
+                self.flags[index] = @intFromBool(hit);
+            }
+        }
+    };
+    var kernel = Kernel{ .world = world, .items = world.query_items[0..count], .flags = world.query_flags[0..count], .filter = query_filter, .kind = kind, .point = point, .bounds = bounds, .shape = shape, .shape_transform = shape_transform, .plan = plan };
+    if (plan.job_count != 0) {
+        var host: host_jobs.Dispatcher = undefined;
+        var custom: jobs.Custom = undefined;
+        var dispatcher = jobs.Dispatcher{ .serial = {} };
+        if (world.dispatcher.dispatch_batch) |callback| {
+            host = .{ .user = world.dispatcher.user, .dispatch_batch = callback, .seen = world.host_dispatch_seen };
+            custom = host.custom();
+            dispatcher = .{ .custom = &custom };
+        }
+        dispatcher.dispatch(.{ .context = &kernel, .job_count = plan.job_count, .run = Kernel.run }) catch {
+            for (kernel.errors[0..plan.job_count]) |failure| if (failure != ok) return failure;
+            return callback_error;
+        };
+        if (world.callback_violation != 0) return callback_error;
+        for (kernel.errors[0..plan.job_count]) |failure| if (failure != ok) return failure;
+        for (kernel.statuses[0..plan.job_count]) |job_status| {
+            if (status.fault == .none and job_status.fault != .none) status.fault = job_status.fault;
+        }
+    }
+    var found: usize = 0;
+    for (world.query_items[0..count], 0..) |item, index| {
+        var hit = kernel.flags[index] == 1;
+        if (kernel.flags[index] == 2) hit = switch (kind) {
             .point => queries.pointOverlapsShape(point, item.collider.shape, item.transform, &world.assets.value, rayWorkspace(world), &status) catch |err| return mapError(err),
             .aabb => queries.aabbOverlapsShape(bounds, item.collider.shape, item.transform, &world.assets.value, overlapWorkspace(world), &status) catch |err| return mapError(err),
             .shape => queries.convexOverlapsShape(shape, shape_transform, item.collider.shape, item.transform, &world.assets.value, overlapWorkspace(world), &status) catch |err| return mapError(err),
@@ -862,7 +994,6 @@ fn overlapQuery(world: *World, query_filter: queries.Filter, query_mode: queries
         if (hit) {
             world.query_candidates[found] = .{ .collider = item.id, .fraction = .zero, .point = if (kind == .point) point else item.transform.position, .normal = .{}, .primitive = 0 };
             found += 1;
-            if (query_mode == .any) break;
         }
     }
     const publication = queries.publish(query_mode, world.query_candidates[0..found], world.query_output) catch |err| return mapError(err);

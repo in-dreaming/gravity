@@ -22,6 +22,9 @@ const hash = @import("../state/hash.zig");
 const world_mod = @import("world.zig");
 const jobs = @import("gravity_jobs");
 
+const max_phase_jobs: u32 = jobs.maximum_batch_jobs;
+const preferred_phase_grain: u32 = 256;
+
 pub const Error = error{ Reentrant, Faulted, TraceCapacity, CcdFault, BroadphaseFailure, ContactFailure } || jobs.Error || world_mod.Error || config.ConfigError || sleeping.Error || constraints.Error || ccd.Error;
 pub const Phase = enum(u8) { prevalidate, commit, integrate, broadphase, narrowphase, islands, solve, ccd, sleep, events, hash };
 pub const FaultCode = enum { math, world, shape, broadphase, contact, ccd };
@@ -313,6 +316,71 @@ pub fn rebuildBroadphase(world: *const world_mod.World, assets: *const store.Sto
         count += 1;
     }
     return broadphase.rebuild(proxies[0..count], buffers);
+}
+
+/// Task 23 production path: each logical job owns collider slots directly;
+/// the main thread then compacts those slots in canonical collider order and
+/// performs the order-sensitive SAP rebuild.
+fn rebuildBroadphaseRanges(workspace: *Workspace, world: *const world_mod.World, assets: *const store.Store, simulation: config.SimulationConfig, dt: fp.Fp, collider_views: []shapes.Collider, proxies: []broadphase.Proxy, buffers: *broadphase.Buffers, status: *fp.MathStatus) Error![]const broadphase.PairKey {
+    const colliders = world.colliders orelse return error.InvalidCollider;
+    if (collider_views.len < colliders.alive.len or proxies.len < colliders.alive.len) return error.CapacityExceeded;
+    const Build = struct {
+        world: *const world_mod.World,
+        colliders: *const world_mod.ColliderStorage,
+        assets: *const store.Store,
+        simulation: config.SimulationConfig,
+        dt: fp.Fp,
+        collider_views: []shapes.Collider,
+        proxies: []broadphase.Proxy,
+
+        fn run(self: *@This(), range: jobs.Range, job_status: *fp.MathStatus) Error!void {
+            var index: usize = range.begin;
+            while (index < range.end) : (index += 1) {
+                if (!self.colliders.alive[index] or !self.colliders.enabled[index]) continue;
+                const body_index = self.world.bodyIndex(self.colliders.body[index]) orelse return error.InvalidBody;
+                const transform = compose(.{ .position = self.world.storage.position[body_index], .orientation = self.world.storage.orientation[body_index] }, self.colliders.local[index], job_status);
+                const exact = shapes.worldAabb(self.colliders.shape[index], self.assets, transform, job_status) catch return error.InvalidShape;
+                self.collider_views[index] = colliderAt(self.colliders, index);
+                self.proxies[index] = .{
+                    .id = .init(@intCast(index), self.colliders.generation[index]),
+                    .collider = &self.collider_views[index],
+                    .body_type = self.world.storage.body_type[body_index],
+                    .world_bounds = exact,
+                    .fat_bounds = broadphase.fatAabb(exact, self.simulation.tolerances.aabb_margin, job_status),
+                    .swept_bounds = broadphase.sweptAabb(exact, self.world.storage.linear_velocity[body_index], self.dt, job_status),
+                };
+            }
+        }
+    };
+    var build = Build{ .world = world, .colliders = &colliders, .assets = assets, .simulation = simulation, .dt = dt, .collider_views = collider_views, .proxies = proxies };
+    try dispatchRanges(workspace, colliders.alive.len, &build, status, Build.run);
+    var count: usize = 0;
+    for (colliders.alive, 0..) |alive, index| {
+        if (!alive or !colliders.enabled[index]) continue;
+        if (count != index) {
+            collider_views[count] = collider_views[index];
+            proxies[count] = proxies[index];
+        }
+        proxies[count].collider = &collider_views[count];
+        count += 1;
+    }
+    return broadphase.rebuild(proxies[0..count], buffers) catch |err| return switch (err) {
+        error.PairCapacity, error.InsufficientEndpoints, error.InsufficientActive, error.ScratchLengthMismatch => error.CapacityExceeded,
+        else => error.BroadphaseFailure,
+    };
+}
+
+fn integratePositionRanges(workspace: *Workspace, world: *world_mod.World, awake: ?[]const bool, dt: fp.Fp, status: *fp.MathStatus) Error!void {
+    const Integrate = struct {
+        world: *world_mod.World,
+        awake: ?[]const bool,
+        dt: fp.Fp,
+        fn run(self: *@This(), range: jobs.Range, job_status: *fp.MathStatus) Error!void {
+            try self.world.integratePositionSlots(range.begin, range.end, self.awake, self.dt, job_status);
+        }
+    };
+    var integrate = Integrate{ .world = world, .awake = awake, .dt = dt };
+    try dispatchRanges(workspace, world.storage.alive.len, &integrate, status, Integrate.run);
 }
 
 /// Builds deterministic Task 19 items from live collider slots. Dynamic and
@@ -864,6 +932,79 @@ fn narrowRuntimePairsTracked(world: *const world_mod.World, assets: *const store
     return output[0..count];
 }
 
+const parallel_narrow_sentinel: u8 = std.math.maxInt(u8);
+
+/// Parallel analytic-pair front end. One fixed staging slot belongs to each
+/// broadphase pair; complex pairs retain the sentinel and are evaluated later
+/// in canonical pair order using their shared bounded GJK/mesh workspaces.
+fn narrowRuntimePairsRanges(workspace: *Workspace, world: *const world_mod.World, assets: *const store.Store, pairs: []const broadphase.PairKey, convex: ?*ConvexNarrowWorkspace, surface: ?*SurfaceNarrowWorkspace, staging: []contact_cache.Patch, output: []contact_cache.Patch, status: *fp.MathStatus, fault_object: ?*?u64) anyerror![]const contact_cache.Patch {
+    if (staging.len < pairs.len) return error.CapacityExceeded;
+    const Prepare = struct {
+        world: *const world_mod.World,
+        pairs: []const broadphase.PairKey,
+        staging: []contact_cache.Patch,
+
+        fn run(self: *@This(), range: jobs.Range, _: *fp.MathStatus) Error!void {
+            var pair_index: usize = range.begin;
+            while (pair_index < range.end) : (pair_index += 1) {
+                const pair = self.pairs[pair_index];
+                self.staging[pair_index] = .{ .key = .{ .collider_a = pair.a, .collider_b = pair.b }, .normal = .zero, .len = parallel_narrow_sentinel };
+                var pair_status = fp.MathStatus{};
+                const a = colliderFor(self.world, pair.a) catch return error.InvalidCollider;
+                const b = colliderFor(self.world, pair.b) catch return error.InvalidCollider;
+                const a_body = self.world.bodyIndex(a.collider.body) orelse return error.InvalidBody;
+                const b_body = self.world.bodyIndex(b.collider.body) orelse return error.InvalidBody;
+                const a_transform = compose(.{ .position = self.world.storage.position[a_body], .orientation = self.world.storage.orientation[a_body] }, a.collider.local, &pair_status);
+                const b_transform = compose(.{ .position = self.world.storage.position[b_body], .orientation = self.world.storage.orientation[b_body] }, b.collider.local, &pair_status);
+                const a_analytic = analyticShape(a.collider.shape, a_transform, &pair_status);
+                const b_analytic = analyticShape(b.collider.shape, b_transform, &pair_status);
+                if (a_analytic == null or b_analytic == null) continue;
+                var slot = contact_cache.Patch{
+                    .key = .{ .collider_a = pair.a, .collider_b = pair.b, .shape_revision_a = a.collider.revision, .shape_revision_b = b.collider.revision },
+                    .normal = .zero,
+                };
+                const relative_velocity = self.world.storage.linear_velocity[b_body].sub(self.world.storage.linear_velocity[a_body], &pair_status);
+                if (analytic.collide(a_analytic.?, b_analytic.?, relative_velocity, pair.a, pair.b, &pair_status)) |hit| {
+                    if (hit.separation.raw <= 0) {
+                        const point = contact_cache.CachedPoint{ .feature_a = analyticFeature(hit.feature_a), .feature_b = analyticFeature(hit.feature_b) };
+                        slot.normal = hit.normal;
+                        slot.points = .{point} ** 4;
+                        slot.len = 1;
+                        slot.sensor = a.collider.sensor or b.collider.sensor;
+                    }
+                }
+                // These primitive fields are zero for analytic manifolds. Use
+                // them only inside staging to retain handled/fault metadata.
+                slot.key.primitive_a = @intFromEnum(pair_status.fault);
+                slot.key.primitive_b = std.math.maxInt(u32);
+                self.staging[pair_index] = slot;
+            }
+        }
+    };
+    var prepare = Prepare{ .world = world, .pairs = pairs, .staging = staging };
+    var ignored_status = fp.MathStatus{};
+    try dispatchRanges(workspace, pairs.len, &prepare, &ignored_status, Prepare.run);
+
+    var count: usize = 0;
+    for (pairs, 0..) |pair, pair_index| {
+        const slot = &staging[pair_index];
+        if (slot.len == parallel_narrow_sentinel) {
+            if (fault_object) |object| object.* = pair.a.value;
+            const produced = try narrowRuntimePairsTracked(world, assets, pairs[pair_index .. pair_index + 1], convex, surface, output[count..], status, fault_object);
+            count += produced.len;
+            continue;
+        }
+        if (status.fault == .none) status.fault = std.enums.fromInt(fp.MathFault, slot.key.primitive_a) orelse .none;
+        if (slot.len == 0) continue;
+        if (count == output.len) return error.CapacityExceeded;
+        output[count] = slot.*;
+        output[count].key.primitive_a = 0;
+        output[count].key.primitive_b = 0;
+        count += 1;
+    }
+    return output[0..count];
+}
+
 /// Reconstructs exact primitive or GJK witnesses for persistent cache patches
 /// and builds canonical Task 15 solver contacts. Sensor patches are
 /// deliberately excluded from impulse solving but remain in the contact cache
@@ -1215,39 +1356,29 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
     for (0..substeps) |_| {
         const Integrate = struct {
             world: *world_mod.World,
-            pipeline_workspace: *AnalyticSolverPipelineWorkspace,
+            awake: ?[]const bool,
             dt: fp.Fp,
-            status: *fp.MathStatus,
-            fn run(self: *@This()) Error!void {
-                if (self.pipeline_workspace.sleep) |sleep| try self.world.integrateVelocitiesAwake(sleep.storage.awake, self.dt, self.status) else self.world.integrateVelocities(self.dt, self.status);
+            fn linear(self: *@This(), range: jobs.Range, job_status: *fp.MathStatus) Error!void {
+                try self.world.integrateLinearVelocitySlots(range.begin, range.end, self.awake, self.dt, job_status);
+            }
+            fn angular(self: *@This(), range: jobs.Range, job_status: *fp.MathStatus) Error!void {
+                try self.world.integrateAngularVelocitySlots(range.begin, range.end, self.awake, self.dt, job_status);
             }
         };
-        var integrate = Integrate{ .world = world, .pipeline_workspace = pipeline_workspace, .dt = dt, .status = status };
-        try dispatchPhase(workspace, .integrate, &integrate, Integrate.run);
+        var integrate = Integrate{ .world = world, .awake = if (pipeline_workspace.sleep) |sleep| sleep.storage.awake else null, .dt = dt };
+        push(workspace, .integrate);
+        try dispatchRanges(workspace, world.storage.alive.len, &integrate, status, Integrate.linear);
+        try dispatchRanges(workspace, world.storage.alive.len, &integrate, status, Integrate.angular);
         try checkMath(state, .integrate, status);
-        const Broadphase = struct {
-            world: *world_mod.World,
-            contacts: *AnalyticContactWorkspace,
-            simulation: config.SimulationConfig,
-            dt: fp.Fp,
-            status: *fp.MathStatus,
-            pairs: []const broadphase.PairKey = &.{},
-            fn run(self: *@This()) Error!void {
-                self.pairs = rebuildBroadphase(self.world, self.contacts.broadphase.assets, self.simulation, self.dt, self.contacts.broadphase.collider_views, self.contacts.broadphase.proxies, self.contacts.broadphase.buffers, self.status) catch |err| return switch (err) {
-                    error.CapacityExceeded, error.PairCapacity, error.InsufficientEndpoints, error.InsufficientActive, error.ScratchLengthMismatch => error.CapacityExceeded,
-                    else => error.BroadphaseFailure,
-                };
-            }
-        };
-        var broad = Broadphase{ .world = world, .contacts = contacts, .simulation = simulation, .dt = dt, .status = status };
-        dispatchPhase(workspace, .broadphase, &broad, Broadphase.run) catch |err| {
+        push(workspace, .broadphase);
+        const pairs = rebuildBroadphaseRanges(workspace, world, contacts.broadphase.assets, simulation, dt, contacts.broadphase.collider_views, contacts.broadphase.proxies, contacts.broadphase.buffers, status) catch |err| {
             if (isDispatchError(err)) return err;
             recordFaultError(state, .broadphase, err, status.fault);
             return error.Faulted;
         };
-        const pairs = broad.pairs;
         try checkMath(state, .broadphase, status);
         const Narrow = struct {
+            workspace: *Workspace,
             world: *world_mod.World,
             contacts: *AnalyticContactWorkspace,
             pairs: []const broadphase.PairKey,
@@ -1257,7 +1388,7 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
             patches: []const contact_cache.Patch = &.{},
             fault_object: ?u64 = null,
             fn run(self: *@This()) Error!void {
-                self.patches = narrowRuntimePairsTracked(self.world, self.contacts.broadphase.assets, self.pairs, self.contacts.convex, self.contacts.surface, self.contacts.narrow, self.status, &self.fault_object) catch |err| return switch (err) {
+                self.patches = narrowRuntimePairsRanges(self.workspace, self.world, self.contacts.broadphase.assets, self.pairs, self.contacts.convex, self.contacts.surface, self.contacts.cache_next, self.contacts.narrow, self.status, &self.fault_object) catch |err| return switch (err) {
                     error.CapacityExceeded, error.OutOfScratch, error.OutOfSpace => error.CapacityExceeded,
                     else => error.ContactFailure,
                 };
@@ -1267,8 +1398,9 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
                 };
             }
         };
-        var narrow = Narrow{ .world = world, .contacts = contacts, .pairs = pairs, .simulation = simulation, .pipeline_workspace = pipeline_workspace, .status = status };
-        dispatchPhase(workspace, .narrowphase, &narrow, Narrow.run) catch |err| {
+        var narrow = Narrow{ .workspace = workspace, .world = world, .contacts = contacts, .pairs = pairs, .simulation = simulation, .pipeline_workspace = pipeline_workspace, .status = status };
+        push(workspace, .narrowphase);
+        narrow.run() catch |err| {
             if (isDispatchError(err)) return err;
             recordFaultErrorFor(state, .narrowphase, err, status.fault, narrow.fault_object);
             return error.Faulted;
@@ -1279,8 +1411,12 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
             contacts: *AnalyticContactWorkspace,
             pipeline_workspace: *AnalyticSolverPipelineWorkspace,
             status: *fp.MathStatus,
+            island_len: usize = 0,
+            member_len: usize = 0,
             fn run(self: *@This()) Error!void {
-                _ = try buildAnalyticIslands(self.world, self.contacts.cache, if (self.pipeline_workspace.joint) |joint| joint.pool else null, self.pipeline_workspace.islands, self.status);
+                const built = try buildAnalyticIslands(self.world, self.contacts.cache, if (self.pipeline_workspace.joint) |joint| joint.pool else null, self.pipeline_workspace.islands, self.status);
+                self.island_len = built.islands.len;
+                self.member_len = built.members.len;
             }
         };
         var islands = Islands{ .world = world, .contacts = contacts, .pipeline_workspace = pipeline_workspace, .status = status };
@@ -1291,12 +1427,15 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
         };
         try checkMath(state, .islands, status);
         const Solve = struct {
+            workspace: *Workspace,
             world: *world_mod.World,
             contacts: *AnalyticContactWorkspace,
             pipeline_workspace: *AnalyticSolverPipelineWorkspace,
             simulation: config.SimulationConfig,
             dt: fp.Fp,
             status: *fp.MathStatus,
+            islands: []const constraints.Island,
+            members: []const @import("../core/ids.zig").BodyId,
             solver_contacts: []const contact_solver.Contact = &.{},
             joint_rows: []constraints.ConstraintRow = &.{},
             fn run(self: *@This()) Error!void {
@@ -1312,11 +1451,38 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
                     const built = try joints.buildPoolRows(self.world, joint.pool, self.dt, joint.rows, joint.scratch, self.status);
                     break :blk joint.rows[0..built.len];
                 } else &.{};
-                try contact_solver.solveWithJointRows(self.world, self.joint_rows, self.solver_contacts, self.pipeline_workspace.solver.pseudo, solverSettings(self.simulation), self.status);
+                try contact_solver.validateInputs(self.world, self.solver_contacts, self.pipeline_workspace.solver.pseudo);
+                try joints.validateRows(self.world, self.joint_rows);
+                // Static/kinematic pseudo slots are read while evaluating a
+                // dynamic island even though they are never written by it.
+                // Clear the complete read set once before workers start.
+                @memset(self.pipeline_workspace.solver.pseudo.linear, geometry.Vec3.zero);
+                @memset(self.pipeline_workspace.solver.pseudo.angular, geometry.Vec3.zero);
+                const IslandSolve = struct {
+                    world: *world_mod.World,
+                    islands: []const constraints.Island,
+                    members: []const @import("../core/ids.zig").BodyId,
+                    joint_rows: []constraints.ConstraintRow,
+                    contacts: []const contact_solver.Contact,
+                    pseudo: contact_solver.PseudoVelocities,
+                    settings: contact_solver.Settings,
+                    fn run(value: *@This(), range: jobs.Range, job_status: *fp.MathStatus) Error!void {
+                        var index: usize = range.begin;
+                        while (index < range.end) : (index += 1) {
+                            const island = value.islands[index];
+                            const first: usize = island.first_member;
+                            const count: usize = island.member_count;
+                            contact_solver.solveIslandWithJointRows(value.world, value.members[first .. first + count], value.joint_rows, value.contacts, value.pseudo, value.settings, job_status);
+                        }
+                    }
+                };
+                var island_solve = IslandSolve{ .world = self.world, .islands = self.islands, .members = self.members, .joint_rows = self.joint_rows, .contacts = self.solver_contacts, .pseudo = self.pipeline_workspace.solver.pseudo, .settings = solverSettings(self.simulation) };
+                try dispatchRangesGrain(self.workspace, self.islands.len, 1, &island_solve, self.status, IslandSolve.run);
             }
         };
-        var solve = Solve{ .world = world, .contacts = contacts, .pipeline_workspace = pipeline_workspace, .simulation = simulation, .dt = dt, .status = status };
-        dispatchPhase(workspace, .solve, &solve, Solve.run) catch |err| {
+        var solve = Solve{ .workspace = workspace, .world = world, .contacts = contacts, .pipeline_workspace = pipeline_workspace, .simulation = simulation, .dt = dt, .status = status, .islands = pipeline_workspace.islands.islands[0..islands.island_len], .members = pipeline_workspace.islands.members[0..islands.member_len] };
+        push(workspace, .solve);
+        solve.run() catch |err| {
             if (isDispatchError(err)) return err;
             recordFault(state, .solve, .contact, status.fault);
             return error.Faulted;
@@ -1346,8 +1512,8 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
                     return error.Faulted;
                 };
                 try checkMath(state, .ccd, status);
-            } else if (pipeline_workspace.sleep) |sleep| try world.integratePositionsAwake(sleep.storage.awake, dt, status) else world.integratePositions(dt, status);
-        } else if (pipeline_workspace.sleep) |sleep| try world.integratePositionsAwake(sleep.storage.awake, dt, status) else world.integratePositions(dt, status);
+            } else try integratePositionRanges(workspace, world, if (pipeline_workspace.sleep) |sleep| sleep.storage.awake else null, dt, status);
+        } else try integratePositionRanges(workspace, world, if (pipeline_workspace.sleep) |sleep| sleep.storage.awake else null, dt, status);
         if (pipeline_workspace.joint) |joint| if (!has_ccd) joints.writeBackImpulses(joint.pool, joint_rows) catch {
             recordFault(state, .solve, .contact, status.fault);
             return error.Faulted;
@@ -1601,6 +1767,49 @@ fn dispatchWork(workspace: *Workspace, context: anytype, comptime run_fn: anytyp
         if (envelope.failure) |failure| return failure;
         return err;
     };
+}
+
+/// Dispatches canonical contiguous ranges and folds per-job math/error state
+/// in logical-job order after the synchronous barrier. Workers never share a
+/// MathStatus or choose output ownership.
+fn dispatchRanges(workspace: *Workspace, item_count: usize, context: anytype, status: *fp.MathStatus, comptime run_fn: anytype) Error!void {
+    return dispatchRangesGrain(workspace, item_count, preferred_phase_grain, context, status, run_fn);
+}
+
+fn dispatchRangesGrain(workspace: *Workspace, item_count: usize, grain: u32, context: anytype, status: *fp.MathStatus, comptime run_fn: anytype) Error!void {
+    const plan = try jobs.RangePlan.initBounded(item_count, grain, max_phase_jobs);
+    if (plan.job_count == 0) return;
+    const Context = @TypeOf(context.*);
+    const Envelope = struct {
+        value: *Context,
+        plan: jobs.RangePlan,
+        failures: [max_phase_jobs]?Error = [_]?Error{null} ** max_phase_jobs,
+        statuses: [max_phase_jobs]fp.MathStatus = [_]fp.MathStatus{.{}} ** max_phase_jobs,
+
+        fn run(raw: *anyopaque, index: u32) !void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            const range = self.plan.range(index) catch |err| {
+                self.failures[index] = err;
+                return err;
+            };
+            run_fn(self.value, range, &self.statuses[index]) catch |err| {
+                self.failures[index] = err;
+                return err;
+            };
+        }
+    };
+    var envelope = Envelope{ .value = context, .plan = plan };
+    workspace.dispatcher.dispatch(.{ .context = &envelope, .job_count = plan.job_count, .run = Envelope.run }) catch |dispatch_error| {
+        for (envelope.failures[0..plan.job_count]) |failure| if (failure) |err| return err;
+        return dispatch_error;
+    };
+    for (envelope.failures[0..plan.job_count]) |failure| if (failure) |err| return err;
+    if (status.fault == .none) {
+        for (envelope.statuses[0..plan.job_count]) |job_status| if (job_status.fault != .none) {
+            status.fault = job_status.fault;
+            break;
+        };
+    }
 }
 fn compose(parent: geometry.Transform3, local: geometry.Transform3, status: *fp.MathStatus) geometry.Transform3 {
     return .{ .position = parent.apply(local.position, status), .orientation = parent.orientation.mul(local.orientation, status) };
