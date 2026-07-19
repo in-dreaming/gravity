@@ -21,6 +21,8 @@ const macroNames = {
   bodyDesc: "GRAVITY_V1_SIZE_BODY_DESC",
   bodyState: "GRAVITY_V1_SIZE_BODY_STATE",
   colliderDesc: "GRAVITY_V1_SIZE_COLLIDER_DESC",
+  jointFrame: "GRAVITY_V1_SIZE_JOINT_FRAME",
+  jointDesc: "GRAVITY_V1_SIZE_JOINT_DESC",
   command: "GRAVITY_V1_SIZE_COMMAND",
   event: "GRAVITY_V1_SIZE_EVENT",
   filter: "GRAVITY_V1_SIZE_QUERY_FILTER",
@@ -28,7 +30,9 @@ const macroNames = {
   pointQuery: "GRAVITY_V1_SIZE_POINT_QUERY",
   aabbQuery: "GRAVITY_V1_SIZE_AABB_QUERY",
   shapeQuery: "GRAVITY_V1_SIZE_SHAPE_QUERY",
-  queryHit: "GRAVITY_V1_SIZE_QUERY_HIT"
+  shapeCastQuery: "GRAVITY_V1_SIZE_SHAPE_CAST_QUERY",
+  queryHit: "GRAVITY_V1_SIZE_QUERY_HIT",
+  worldStats: "GRAVITY_V1_SIZE_WORLD_STATS"
 };
 const header = readFileSync(headerPath, "utf8");
 for (const [layout, macro] of Object.entries(macroNames)) {

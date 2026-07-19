@@ -17,8 +17,9 @@
     "gravity_v1_world_memory_required", "gravity_v1_world_init", "gravity_v1_world_deinit", "gravity_v1_world_set_dispatcher",
     "gravity_v1_world_tick", "gravity_v1_world_last_error", "gravity_v1_world_hash", "gravity_v1_world_step",
     "gravity_v1_world_create_body", "gravity_v1_world_destroy_body", "gravity_v1_world_body_states",
-    "gravity_v1_world_create_collider", "gravity_v1_world_destroy_collider", "gravity_v1_world_events",
-    "gravity_v1_world_query_ray", "gravity_v1_world_query_point", "gravity_v1_world_query_aabb", "gravity_v1_world_query_shape",
+    "gravity_v1_world_create_collider", "gravity_v1_world_destroy_collider",
+    "gravity_v1_world_create_joint", "gravity_v1_world_destroy_joint", "gravity_v1_world_set_body_ccd", "gravity_v1_world_stats", "gravity_v1_world_events",
+    "gravity_v1_world_query_ray", "gravity_v1_world_query_point", "gravity_v1_world_query_aabb", "gravity_v1_world_query_shape", "gravity_v1_world_query_shape_cast",
     "gravity_v1_world_snapshot_size", "gravity_v1_world_snapshot_save", "gravity_v1_world_snapshot_load"
   ]
 }

@@ -16,6 +16,9 @@ const world_mod = @import("../dynamics/world.zig");
 const pipeline = @import("../dynamics/pipeline.zig");
 const solver = @import("../dynamics/contact_solver.zig");
 const constraints = @import("../dynamics/constraints.zig");
+const joints = @import("../dynamics/joints.zig");
+const sleeping = @import("../dynamics/sleeping.zig");
+const ccd = @import("../dynamics/ccd.zig");
 const queries = @import("../query/queries.zig");
 const snapshot = @import("../state/snapshot.zig");
 const store_mod = @import("../assets/store.zig");
@@ -38,6 +41,22 @@ pub const reentrant: u32 = 10;
 pub const buffer_too_small: u32 = 11;
 pub const unsupported: u32 = 12;
 pub const internal: u32 = 13;
+
+pub const world_feature_joints: u32 = 1 << 0;
+pub const world_feature_sleep: u32 = 1 << 1;
+pub const world_feature_ccd: u32 = 1 << 2;
+pub const world_feature_diagnostics: u32 = 1 << 3;
+const world_feature_all = world_feature_joints | world_feature_sleep | world_feature_ccd | world_feature_diagnostics;
+const world_desc_v1_prefix_size: u32 = 96;
+
+pub const joint_flag_reference: u32 = 1 << 0;
+pub const joint_flag_swing_reference: u32 = 1 << 1;
+pub const joint_flag_reference_orientation: u32 = 1 << 2;
+pub const joint_flag_limit: u32 = 1 << 3;
+pub const joint_flag_motor: u32 = 1 << 4;
+pub const joint_flag_spring: u32 = 1 << 5;
+pub const joint_flag_cone_twist: u32 = 1 << 6;
+const joint_flag_all = joint_flag_reference | joint_flag_swing_reference | joint_flag_reference_orientation | joint_flag_limit | joint_flag_motor | joint_flag_spring | joint_flag_cone_twist;
 
 pub const Vec3 = extern struct { x: i64, y: i64, z: i64 };
 pub const Quat = extern struct { x: i64, y: i64, z: i64, w: i64 };
@@ -73,6 +92,8 @@ pub const WorldDesc = extern struct {
     substeps: u32,
     tick_hz: u32,
     assets: ?*const AssetStore,
+    feature_flags: u32,
+    joint_capacity: u32,
 };
 pub const BodyDesc = extern struct {
     struct_size: u32,
@@ -114,6 +135,29 @@ pub const ColliderDesc = extern struct {
     group: i32,
     revision: u32,
 };
+pub const JointFrame = extern struct { anchor: Vec3, axis: Vec3, secondary: Vec3 };
+pub const JointDesc = extern struct {
+    struct_size: u32,
+    reserved: u32,
+    kind: u32,
+    flags: u32,
+    body_a: u64,
+    body_b: u64,
+    frame_a: JointFrame,
+    frame_b: JointFrame,
+    reference: i64,
+    swing_reference: i64,
+    reference_orientation: Quat,
+    limit_min: i64,
+    limit_max: i64,
+    motor_target_velocity: i64,
+    motor_max_force: i64,
+    spring_frequency: i64,
+    spring_damping_ratio: i64,
+    cone_swing_max: i64,
+    cone_twist_min: i64,
+    cone_twist_max: i64,
+};
 pub const Command = extern struct {
     struct_size: u32,
     reserved: u32,
@@ -134,7 +178,21 @@ pub const RayQuery = extern struct { struct_size: u32, reserved: u32, origin: Ve
 pub const PointQuery = extern struct { struct_size: u32, reserved: u32, point: Vec3, filter: Filter, mode: u32, reserved1: u32 };
 pub const AabbQuery = extern struct { struct_size: u32, reserved: u32, min: Vec3, max: Vec3, filter: Filter, mode: u32, reserved1: u32 };
 pub const ShapeQuery = extern struct { struct_size: u32, reserved: u32, shape: ColliderDesc, transform: Transform, filter: Filter, mode: u32, reserved1: u32 };
+pub const ShapeCastQuery = extern struct { struct_size: u32, reserved: u32, shape: ColliderDesc, start: Transform, delta: Vec3, filter: Filter, mode: u32, reserved1: u32 };
 pub const QueryHit = extern struct { struct_size: u32, reserved: u32, collider: u64, fraction: i64, point: Vec3, normal: Vec3, primitive: u32, reserved1: u32 };
+pub const WorldStats = extern struct {
+    struct_size: u32,
+    reserved: u32,
+    body_count: u32,
+    collider_count: u32,
+    joint_count: u32,
+    awake_body_count: u32,
+    contact_count: u32,
+    broad_pair_count: u32,
+    event_count: u32,
+    worker_count: u32,
+    phase_visits: [11]u32,
+};
 
 pub const RunJobFn = *const fn (?*anyopaque, u32) callconv(.c) u32;
 pub const DispatchBatchFn = *const fn (?*anyopaque, u32, RunJobFn, ?*anyopaque) callconv(.c) u32;
@@ -174,6 +232,16 @@ pub const World = struct {
     solver_workspace: pipeline.AnalyticSolverWorkspace,
     island_workspace: pipeline.IslandWorkspace,
     solver_pipeline: pipeline.AnalyticSolverPipelineWorkspace,
+    feature_flags: u32,
+    joint_pool: joints.Pool,
+    stage_joint_pool: joints.Pool,
+    joint_workspace: pipeline.JointWorkspace,
+    sleep_workspace: pipeline.SleepWorkspace,
+    stage_sleep: sleeping.Storage,
+    ccd_items: pipeline.CcdItemWorkspace,
+    ccd_workspace: pipeline.CcdPipelineWorkspace,
+    stage_ccd: []bool,
+    diagnostics: pipeline.Diagnostics,
     event_count: usize,
     stage_contacts: []contacts.Patch,
     contact_scratch: []contacts.Patch,
@@ -197,15 +265,18 @@ pub const World = struct {
     bodies_payload: []u8,
     colliders_payload: []u8,
     contacts_payload: []u8,
+    joints_payload: []u8,
+    sleep_payload: []u8,
+    ccd_payload: []u8,
     snapshot_output: []u8,
     dispatcher: Dispatcher,
 };
 
 comptime {
     if (@sizeOf(Vec3) != 24 or @sizeOf(Quat) != 32 or @sizeOf(Transform) != 56 or @sizeOf(Hash128) != 16) @compileError("C ABI scalar layout drift");
-    if (@sizeOf(BodyDesc) != 128 or @sizeOf(BodyState) != 128 or @sizeOf(ColliderDesc) != 144 or @sizeOf(Command) != 144 or @sizeOf(Event) != 48 or @sizeOf(Filter) != 16 or @sizeOf(RayQuery) != 88 or @sizeOf(PointQuery) != 56 or @sizeOf(AabbQuery) != 80 or @sizeOf(ShapeQuery) != 232 or @sizeOf(QueryHit) != 80) @compileError("C ABI aggregate layout drift");
+    if (@sizeOf(BodyDesc) != 128 or @sizeOf(BodyState) != 128 or @sizeOf(ColliderDesc) != 144 or @sizeOf(JointFrame) != 72 or @sizeOf(JointDesc) != 296 or @sizeOf(Command) != 144 or @sizeOf(Event) != 48 or @sizeOf(Filter) != 16 or @sizeOf(RayQuery) != 88 or @sizeOf(PointQuery) != 56 or @sizeOf(AabbQuery) != 80 or @sizeOf(ShapeQuery) != 232 or @sizeOf(ShapeCastQuery) != 256 or @sizeOf(QueryHit) != 80 or @sizeOf(WorldStats) != 84) @compileError("C ABI aggregate layout drift");
     if (@offsetOf(BodyDesc, "transform") != 16 or @offsetOf(BodyDesc, "inverse_mass") != 72 or @offsetOf(BodyState, "id") != 8 or @offsetOf(BodyState, "transform") != 24 or @offsetOf(BodyState, "linear_velocity") != 80 or @offsetOf(BodyState, "angular_velocity") != 104 or @offsetOf(ColliderDesc, "body") != 8 or @offsetOf(ColliderDesc, "local") != 24 or @offsetOf(ColliderDesc, "dimensions") != 80 or @offsetOf(Command, "body") != 24 or @offsetOf(Command, "first") != 32 or @offsetOf(Command, "second") != 56 or @offsetOf(Command, "transform") != 80 or @offsetOf(QueryHit, "collider") != 8 or @offsetOf(QueryHit, "fraction") != 16 or @offsetOf(QueryHit, "point") != 24 or @offsetOf(QueryHit, "normal") != 48) @compileError("C ABI field layout drift");
-    if (@import("builtin").target.cpu.arch == .wasm32 and (@sizeOf(AssetBlob) != 16 or @sizeOf(AssetStoreDesc) != 20 or @sizeOf(WorldDesc) != 96 or @offsetOf(AssetStoreDesc, "asset_count") != 12 or @offsetOf(WorldDesc, "assets") != 88)) @compileError("wasm32 C ABI layout drift");
+    if (@import("builtin").target.cpu.arch == .wasm32 and (@sizeOf(AssetBlob) != 16 or @sizeOf(AssetStoreDesc) != 20 or @sizeOf(WorldDesc) != 104 or @offsetOf(AssetStoreDesc, "asset_count") != 12 or @offsetOf(WorldDesc, "assets") != 88 or @offsetOf(WorldDesc, "feature_flags") != 92)) @compileError("wasm32 C ABI layout drift");
 }
 
 fn validStruct(value: anytype) bool {
@@ -213,12 +284,30 @@ fn validStruct(value: anytype) bool {
     return value.struct_size >= @sizeOf(T) and value.reserved == 0;
 }
 
+fn validWorldDesc(value: *const WorldDesc) bool {
+    return value.struct_size >= world_desc_v1_prefix_size and value.reserved == 0;
+}
+
+fn worldFeatures(value: *const WorldDesc) ?u32 {
+    if (!validWorldDesc(value)) return null;
+    if (value.struct_size < @sizeOf(WorldDesc)) return 0;
+    if (value.feature_flags & ~world_feature_all != 0) return null;
+    return value.feature_flags;
+}
+
+fn worldJointCapacity(value: *const WorldDesc, features: u32) ?u32 {
+    if (features & world_feature_joints == 0) return 0;
+    const requested = if (value.joint_capacity == 0) value.body_capacity else value.joint_capacity;
+    if (requested == 0) return null;
+    return requested;
+}
+
 fn mapError(err: anyerror) u32 {
     return switch (err) {
         error.InsufficientMemory, error.OutOfMemory => insufficient_memory,
         error.MisalignedMemory => misaligned,
         error.CapacityExceeded, error.OutOfSpace => capacity,
-        error.InvalidBody, error.InvalidCollider => invalid_id,
+        error.InvalidBody, error.InvalidCollider, error.InvalidJoint => invalid_id,
         error.InvalidShape, error.InvalidBodyShape, error.InvalidMass, error.InvalidCommand, error.InvalidQuery, error.InvalidConfig, error.InvalidCapacity, error.InvalidIteration, error.InvalidTolerance, error.InvalidEnvelope, error.InvalidFeatureFlags => invalid_argument,
         error.UnsupportedShape => unsupported,
         error.Reentrant => reentrant,
@@ -252,6 +341,9 @@ fn transform(value: Transform) g.Transform3 {
 fn abiTransform(value: g.Transform3) Transform {
     return .{ .position = abiVec(value.position), .orientation = abiQuat(value.orientation) };
 }
+fn jointFrame(value: JointFrame) joints.Frame {
+    return .{ .anchor = vec(value.anchor), .axis = vec(value.axis), .secondary = vec(value.secondary) };
+}
 fn compose(parent: g.Transform3, local: g.Transform3, status: *fp.MathStatus) g.Transform3 {
     return .{ .position = parent.apply(local.position, status), .orientation = parent.orientation.mul(local.orientation, status).canonicalize(status) };
 }
@@ -262,12 +354,20 @@ fn locks(value: u32) ?world_mod.DofLock {
 
 fn estimateWorldBytes(desc: *const WorldDesc) ?usize {
     if (desc.body_capacity == 0 or desc.collider_capacity == 0 or desc.command_capacity == 0 or desc.contact_capacity == 0) return null;
+    const features = worldFeatures(desc) orelse return null;
+    const joint_capacity = worldJointCapacity(desc, features) orelse return null;
     var total: usize = 256 * 1024;
     total = std.math.add(usize, total, std.math.mul(usize, desc.body_capacity, 4096) catch return null) catch return null;
     total = std.math.add(usize, total, std.math.mul(usize, desc.collider_capacity, 4096) catch return null) catch return null;
     total = std.math.add(usize, total, std.math.mul(usize, desc.command_capacity, 512) catch return null) catch return null;
     total = std.math.add(usize, total, desc.command_capacity) catch return null;
     total = std.math.add(usize, total, std.math.mul(usize, desc.contact_capacity, 8192) catch return null) catch return null;
+    if (features != 0) {
+        total = std.math.add(usize, total, std.math.mul(usize, desc.body_capacity, 8192) catch return null) catch return null;
+        total = std.math.add(usize, total, std.math.mul(usize, desc.collider_capacity, 4096) catch return null) catch return null;
+        total = std.math.add(usize, total, std.math.mul(usize, desc.contact_capacity, 2048) catch return null) catch return null;
+        total = std.math.add(usize, total, std.math.mul(usize, joint_capacity, 16384) catch return null) catch return null;
+    }
     return total;
 }
 
@@ -459,7 +559,7 @@ pub export fn gravity_v1_world_memory_required(desc_ptr: ?*const WorldDesc, out_
     const desc = desc_ptr orelse return invalid_argument;
     const output = out_size orelse return invalid_argument;
     const alignment = out_alignment orelse return invalid_argument;
-    if (!validStruct(desc) or desc.assets == null) return bad_struct;
+    if (!validWorldDesc(desc) or desc.assets == null or worldFeatures(desc) == null) return bad_struct;
     const total = estimateWorldBytes(desc) orelse return invalid_argument;
     output.* = total;
     alignment.* = @alignOf(World);
@@ -479,6 +579,8 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
     const asset_store = desc.assets orelse return invalid_argument;
     if (asset_store.magic != asset_magic or asset_store.active == 0) return invalid_state;
     if (desc.substeps == 0 or desc.tick_hz == 0) return invalid_argument;
+    const feature_flags = worldFeatures(desc) orelse return bad_struct;
+    const joint_capacity = worldJointCapacity(desc, feature_flags) orelse return invalid_argument;
     const bytes: []u8 = @as([*]u8, @ptrCast(raw))[0..@intCast(memory_size)];
     const result: *World = @ptrCast(@alignCast(bytes.ptr));
     var fba = std.heap.FixedBufferAllocator.init(bytes[@sizeOf(World)..]);
@@ -493,6 +595,7 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
     var simulation = config.SimulationConfig.default;
     simulation.capacities.body = desc.body_capacity;
     simulation.capacities.collider = desc.collider_capacity;
+    if (joint_capacity != 0) simulation.capacities.joint = joint_capacity;
     simulation.capacities.command_per_tick = desc.command_capacity;
     simulation.capacities.contact_patch = desc.contact_capacity;
     simulation.capacities.contact_point = @max(desc.contact_capacity, simulation.capacities.contact_point);
@@ -539,6 +642,43 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
     const tick_events = allocSlice(allocator, contacts.Event, @as(usize, desc.contact_capacity) * 2) catch return insufficient_memory;
     const stage_contacts = allocSlice(allocator, contacts.Patch, desc.contact_capacity) catch return insufficient_memory;
     const contact_scratch = allocSlice(allocator, contacts.Patch, desc.contact_capacity) catch return insufficient_memory;
+    const joint_storage_capacity: usize = @max(@as(usize, joint_capacity), 1);
+    const joint_values = allocSlice(allocator, joints.Joint, joint_storage_capacity) catch return insufficient_memory;
+    const joint_generation = allocSlice(allocator, u32, joint_storage_capacity) catch return insufficient_memory;
+    const joint_alive = allocSlice(allocator, bool, joint_storage_capacity) catch return insufficient_memory;
+    const joint_retired = allocSlice(allocator, bool, joint_storage_capacity) catch return insufficient_memory;
+    const stage_joint_values = allocSlice(allocator, joints.Joint, joint_storage_capacity) catch return insufficient_memory;
+    const stage_joint_generation = allocSlice(allocator, u32, joint_storage_capacity) catch return insufficient_memory;
+    const stage_joint_alive = allocSlice(allocator, bool, joint_storage_capacity) catch return insufficient_memory;
+    const stage_joint_retired = allocSlice(allocator, bool, joint_storage_capacity) catch return insufficient_memory;
+    const joint_pool = joints.Pool.init(.{ .values = joint_values, .generation = joint_generation, .alive = joint_alive, .retired = joint_retired }) catch return insufficient_memory;
+    const stage_joint_pool = joints.Pool.init(.{ .values = stage_joint_values, .generation = stage_joint_generation, .alive = stage_joint_alive, .retired = stage_joint_retired }) catch return insufficient_memory;
+    const joint_rows = allocSlice(allocator, constraints.ConstraintRow, joint_storage_capacity * 8) catch return insufficient_memory;
+    const joint_authored = allocSlice(allocator, constraints.ConstraintRow, joint_storage_capacity * 8) catch return insufficient_memory;
+    const joint_build = allocSlice(allocator, constraints.ConstraintRow, joint_storage_capacity * 12) catch return insufficient_memory;
+    const joint_states = allocSlice(allocator, joints.MutableState, joint_storage_capacity) catch return insufficient_memory;
+    const awake = allocSlice(allocator, bool, desc.body_capacity) catch return insufficient_memory;
+    const sleep_counter = allocSlice(allocator, u32, desc.body_capacity) catch return insufficient_memory;
+    const wake_reason = allocSlice(allocator, sleeping.WakeReason, desc.body_capacity) catch return insufficient_memory;
+    const stage_awake = allocSlice(allocator, bool, desc.body_capacity) catch return insufficient_memory;
+    const stage_sleep_counter = allocSlice(allocator, u32, desc.body_capacity) catch return insufficient_memory;
+    const stage_wake_reason = allocSlice(allocator, sleeping.WakeReason, desc.body_capacity) catch return insufficient_memory;
+    const sleep_storage = sleeping.Storage{ .awake = awake, .counter = sleep_counter, .reason = wake_reason };
+    const stage_sleep_storage = sleeping.Storage{ .awake = stage_awake, .counter = stage_sleep_counter, .reason = stage_wake_reason };
+    sleeping.init(sleep_storage) catch return insufficient_memory;
+    sleeping.init(stage_sleep_storage) catch return insufficient_memory;
+    const sleep_requests = allocSlice(allocator, sleeping.Request, @as(usize, desc.body_capacity) * 2 + joint_storage_capacity * 2) catch return insufficient_memory;
+    const sleep_graph = allocSlice(allocator, ids.BodyId, desc.body_capacity) catch return insufficient_memory;
+    const wake_events = allocSlice(allocator, sleeping.Event, @as(usize, desc.body_capacity) * 2) catch return insufficient_memory;
+    const sleep_events = allocSlice(allocator, sleeping.Event, @as(usize, desc.body_capacity) * 2) catch return insufficient_memory;
+    const ccd_enabled = allocSlice(allocator, bool, desc.body_capacity) catch return insufficient_memory;
+    const stage_ccd = allocSlice(allocator, bool, desc.body_capacity) catch return insufficient_memory;
+    @memset(ccd_enabled, false);
+    @memset(stage_ccd, false);
+    const ccd_items = allocSlice(allocator, ccd.Item, desc.body_capacity) catch return insufficient_memory;
+    const ccd_pairs = allocSlice(allocator, ccd.Pair, desc.contact_capacity) catch return insufficient_memory;
+    const ccd_patches = allocSlice(allocator, contacts.Patch, desc.contact_capacity) catch return insufficient_memory;
+    const ccd_merge_input = allocSlice(allocator, contacts.Patch, @as(usize, desc.contact_capacity) + 1) catch return insufficient_memory;
     const query_items = allocSlice(allocator, queries.Item, desc.collider_capacity) catch return insufficient_memory;
     const query_colliders = allocSlice(allocator, shapes.Collider, desc.collider_capacity) catch return insufficient_memory;
     const query_capacity = @max(desc.collider_capacity, desc.contact_capacity);
@@ -566,7 +706,10 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
     const bodies_payload = allocSlice(allocator, u8, @as(usize, desc.body_capacity) * 273 + 256) catch return insufficient_memory;
     const colliders_payload = allocSlice(allocator, u8, @as(usize, desc.collider_capacity) * 256 + 256) catch return insufficient_memory;
     const contacts_payload = allocSlice(allocator, u8, @as(usize, desc.contact_capacity) * 512 + 256) catch return insufficient_memory;
-    const snapshot_output = allocSlice(allocator, u8, pipeline_payload.len + bodies_payload.len + colliders_payload.len + contacts_payload.len + 1024) catch return insufficient_memory;
+    const joints_payload = allocSlice(allocator, u8, joint_storage_capacity * 512 + 256) catch return insufficient_memory;
+    const sleep_payload = allocSlice(allocator, u8, @as(usize, desc.body_capacity) * 16 + 256) catch return insufficient_memory;
+    const ccd_payload = allocSlice(allocator, u8, @as(usize, desc.body_capacity) * 2 + 256) catch return insufficient_memory;
+    const snapshot_output = allocSlice(allocator, u8, pipeline_payload.len + bodies_payload.len + colliders_payload.len + contacts_payload.len + joints_payload.len + sleep_payload.len + ccd_payload.len + 2048) catch return insufficient_memory;
     result.* = .{
         .magic = world_magic,
         .active = 1,
@@ -591,6 +734,16 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
         .solver_workspace = undefined,
         .island_workspace = undefined,
         .solver_pipeline = undefined,
+        .feature_flags = feature_flags,
+        .joint_pool = joint_pool,
+        .stage_joint_pool = stage_joint_pool,
+        .joint_workspace = undefined,
+        .sleep_workspace = .{ .storage = sleep_storage, .requests = sleep_requests, .graph_scratch = sleep_graph, .wake_events = wake_events, .sleep_events = sleep_events },
+        .stage_sleep = stage_sleep_storage,
+        .ccd_items = .{ .enabled = ccd_enabled, .items = ccd_items },
+        .ccd_workspace = undefined,
+        .stage_ccd = stage_ccd,
+        .diagnostics = .{},
         .event_count = 0,
         .stage_contacts = stage_contacts,
         .contact_scratch = contact_scratch,
@@ -614,6 +767,9 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
         .bodies_payload = bodies_payload,
         .colliders_payload = colliders_payload,
         .contacts_payload = contacts_payload,
+        .joints_payload = joints_payload,
+        .sleep_payload = sleep_payload,
+        .ccd_payload = ccd_payload,
         .snapshot_output = snapshot_output,
         .dispatcher = .{ .struct_size = @sizeOf(Dispatcher), .reserved = 0, .user = null, .dispatch_batch = null },
     };
@@ -636,7 +792,21 @@ pub export fn gravity_v1_world_init(memory: ?*anyopaque, memory_size: u64, desc_
     result.contact_workspace = .{ .broadphase = &result.broadphase_workspace, .narrow = narrow_patches, .convex = &result.convex_workspace, .surface = &result.surface_workspace, .cache = &result.cache, .cache_next = cache_next, .events = contact_events };
     result.solver_workspace = .{ .contacts = solver_contacts, .points = solver_points, .restitution_bias = restitution_bias, .pseudo = .{ .linear = pseudo_linear, .angular = pseudo_angular }, .manifold = result.convex_workspace.manifold, .surface = result.surface_workspace };
     result.island_workspace = .{ .edges = island_edges, .edge_scratch = edge_scratch, .islands = islands, .members = members, .lock_rows = lock_rows };
-    result.solver_pipeline = .{ .contacts = &result.contact_workspace, .solver = &result.solver_workspace, .islands = &result.island_workspace, .substep_events = substep_events, .previous = previous, .event_next = event_next, .tick_events = tick_events };
+    result.joint_workspace = .{ .pool = &result.joint_pool, .rows = joint_rows, .scratch = .{ .authored = joint_authored, .build = joint_build, .states = joint_states } };
+    const cast_surface = queries.SurfaceCastWorkspace{ .compound_leaves = query_leaves, .mesh = .{ .nodes = query_nodes_a, .primitives = query_u32_a, .stack = query_u32_b }, .heightfield = .{ .stack = query_u32_b, .triangles = query_height_triangles } };
+    result.ccd_workspace = .{ .assets = &asset_store.value, .items = &result.ccd_items, .pairs = ccd_pairs, .surface = cast_surface, .patches = ccd_patches, .merge_input = ccd_merge_input };
+    result.solver_pipeline = .{
+        .contacts = &result.contact_workspace,
+        .solver = &result.solver_workspace,
+        .islands = &result.island_workspace,
+        .joint = if (feature_flags & world_feature_joints != 0) &result.joint_workspace else null,
+        .sleep = if (feature_flags & world_feature_sleep != 0) &result.sleep_workspace else null,
+        .ccd = if (feature_flags & world_feature_ccd != 0) &result.ccd_workspace else null,
+        .substep_events = substep_events,
+        .previous = previous,
+        .event_next = event_next,
+        .tick_events = tick_events,
+    };
     output.* = result;
     return ok;
 }
@@ -677,7 +847,13 @@ pub export fn gravity_v1_world_hash(world: ?*const World, out_hash: ?*Hash128) c
     const value = checkedConst(world) orelse return invalid_state;
     if (rejectCallbackReentry(value)) return reentrant;
     const output = out_hash orelse return invalid_argument;
-    output.bytes = pipeline.canonicalStateHash(&value.value, &value.state, value.simulation, .{ .cache = &value.cache });
+    const extended = value.feature_flags & (world_feature_joints | world_feature_sleep | world_feature_ccd) != 0;
+    output.bytes = pipeline.canonicalStateHash(&value.value, &value.state, value.simulation, .{
+        .cache = &value.cache,
+        .joint = if (extended and value.feature_flags & world_feature_joints != 0) &value.joint_pool else null,
+        .sleep = if (extended and value.feature_flags & world_feature_sleep != 0) value.sleep_workspace.storage else null,
+        .ccd_enabled = if (extended and value.feature_flags & world_feature_ccd != 0) value.ccd_items.enabled else null,
+    });
     return ok;
 }
 
@@ -705,7 +881,7 @@ pub export fn gravity_v1_world_step(world_ptr: ?*World, input: [*c]const Command
     while (i < count) : (i += 1) world.commands[i] = convertCommand(input[i]) orelse return leave(world, bad_struct);
     const rollback_bytes = snapshotBytes(world) catch |err| return leave(world, mapError(err));
     var status = fp.MathStatus{};
-    var workspace = pipeline.Workspace{ .commands = world.commands, .trace = world.trace };
+    var workspace = pipeline.Workspace{ .commands = world.commands, .trace = world.trace, .diagnostics = if (world.feature_flags & world_feature_diagnostics != 0) &world.diagnostics else null };
     const stepped = (if (comptime abi_options.serial_wasm)
         pipeline.stepWithAnalyticSolver(&world.value, &world.state, world.simulation, world.commands[0..count], &workspace, &world.solver_pipeline, &status)
     else block: {
@@ -719,14 +895,12 @@ pub export fn gravity_v1_world_step(world_ptr: ?*World, input: [*c]const Command
         break :block pipeline.stepWithAnalyticSolver(&world.value, &world.state, world.simulation, world.commands[0..count], &workspace, &world.solver_pipeline, &status);
     }) catch |err| {
         const failure = mapError(err);
-        const restored = snapshot.decodePipelineBodiesContactsSnapshotChecked(rollback_bytes, .{ .configuration = world.simulation, .asset_set = world.assets.value.asset_set_hash }, &world.value, &world.stage, &world.cache, world.stage_contacts, world.contact_scratch) catch return leave(world, internal);
-        world.state = restored.state;
+        restoreSnapshot(world, rollback_bytes) catch return leave(world, internal);
         world.event_count = 0;
         return leave(world, failure);
     };
     if (world.callback_violation != 0) {
-        const restored = snapshot.decodePipelineBodiesContactsSnapshotChecked(rollback_bytes, .{ .configuration = world.simulation, .asset_set = world.assets.value.asset_set_hash }, &world.value, &world.stage, &world.cache, world.stage_contacts, world.contact_scratch) catch return leave(world, internal);
-        world.state = restored.state;
+        restoreSnapshot(world, rollback_bytes) catch return leave(world, internal);
         world.event_count = 0;
         return leave(world, callback_error);
     }
@@ -750,6 +924,10 @@ pub export fn gravity_v1_world_create_body(world_ptr: ?*World, desc_ptr: ?*const
     const dof = locks(desc.dof_locks) orelse return leave(world, invalid_argument);
     var status = fp.MathStatus{};
     const id = world.value.create(.{ .body_type = body_type, .transform = transform(desc.transform), .inverse_mass = .{ .raw = desc.inverse_mass }, .inverse_inertia_local = .{ .xx = .{ .raw = desc.inverse_inertia_xx }, .yy = .{ .raw = desc.inverse_inertia_yy }, .zz = .{ .raw = desc.inverse_inertia_zz }, .xy = .{ .raw = desc.inverse_inertia_xy }, .xz = .{ .raw = desc.inverse_inertia_xz }, .yz = .{ .raw = desc.inverse_inertia_yz } }, .locks = dof }, &status) catch |err| return leave(world, mapError(err));
+    world.sleep_workspace.storage.awake[id.index()] = true;
+    world.sleep_workspace.storage.counter[id.index()] = 0;
+    world.sleep_workspace.storage.reason[id.index()] = .none;
+    @constCast(world.ccd_items.enabled)[id.index()] = false;
     output.* = id.value;
     return leave(world, ok);
 }
@@ -757,8 +935,112 @@ pub export fn gravity_v1_world_destroy_body(world_ptr: ?*World, id: u64) callcon
     const world = checked(world_ptr) orelse return invalid_state;
     const entered = enter(world);
     if (entered != ok) return entered;
-    world.value.destroy(.{ .value = id }) catch |err| return leave(world, mapError(err));
+    const body = ids.BodyId{ .value = id };
+    const index = world.value.bodyIndex(body) orelse return leave(world, invalid_id);
+    if (world.feature_flags & world_feature_joints != 0) {
+        joints.destroyBody(&world.value, &world.joint_pool, body) catch |err| return leave(world, mapError(err));
+    } else {
+        world.value.destroy(body) catch |err| return leave(world, mapError(err));
+    }
+    @constCast(world.ccd_items.enabled)[index] = false;
     return leave(world, ok);
+}
+
+fn jointDesc(value: *const JointDesc) ?joints.Desc {
+    if (!validStruct(value) or value.flags & ~joint_flag_all != 0) return null;
+    const kind: joints.Kind = switch (value.kind) {
+        0 => .distance,
+        1 => .ball_socket,
+        2 => .hinge,
+        3 => .slider,
+        4 => .fixed,
+        5 => .cone_twist,
+        else => return null,
+    };
+    return .{
+        .kind = kind,
+        .body_a = .{ .value = value.body_a },
+        .body_b = .{ .value = value.body_b },
+        .frame_a = jointFrame(value.frame_a),
+        .frame_b = jointFrame(value.frame_b),
+        .reference = if (value.flags & joint_flag_reference != 0) .{ .raw = value.reference } else null,
+        .swing_reference = if (value.flags & joint_flag_swing_reference != 0) .{ .raw = value.swing_reference } else null,
+        .reference_orientation = if (value.flags & joint_flag_reference_orientation != 0) quat(value.reference_orientation) else null,
+        .limit = .{ .enabled = value.flags & joint_flag_limit != 0, .min = .{ .raw = value.limit_min }, .max = .{ .raw = value.limit_max } },
+        .motor = .{ .enabled = value.flags & joint_flag_motor != 0, .target_velocity = .{ .raw = value.motor_target_velocity }, .max_force = .{ .raw = value.motor_max_force } },
+        .spring = .{ .enabled = value.flags & joint_flag_spring != 0, .frequency = .{ .raw = value.spring_frequency }, .damping_ratio = .{ .raw = value.spring_damping_ratio } },
+        .cone_twist = .{ .enabled = value.flags & joint_flag_cone_twist != 0, .swing_max = .{ .raw = value.cone_swing_max }, .twist_min = .{ .raw = value.cone_twist_min }, .twist_max = .{ .raw = value.cone_twist_max } },
+    };
+}
+
+pub export fn gravity_v1_world_create_joint(world_ptr: ?*World, desc_ptr: ?*const JointDesc, out_id: ?*u64) callconv(.c) u32 {
+    const world = checked(world_ptr) orelse return invalid_state;
+    if (world.feature_flags & world_feature_joints == 0) return unsupported;
+    const desc = desc_ptr orelse return invalid_argument;
+    const output = out_id orelse return invalid_argument;
+    const entered = enter(world);
+    if (entered != ok) return entered;
+    const converted = jointDesc(desc) orelse return leave(world, bad_struct);
+    var status = fp.MathStatus{};
+    const id = world.joint_pool.create(&world.value, converted, &status) catch |err| return leave(world, mapError(err));
+    if (status.fault != .none) return leave(world, invalid_argument);
+    output.* = id.value;
+    return leave(world, ok);
+}
+
+pub export fn gravity_v1_world_destroy_joint(world_ptr: ?*World, id: u64) callconv(.c) u32 {
+    const world = checked(world_ptr) orelse return invalid_state;
+    if (world.feature_flags & world_feature_joints == 0) return unsupported;
+    const entered = enter(world);
+    if (entered != ok) return entered;
+    world.joint_pool.destroy(.{ .value = id }) catch |err| return leave(world, mapError(err));
+    return leave(world, ok);
+}
+
+pub export fn gravity_v1_world_set_body_ccd(world_ptr: ?*World, id: u64, enabled: u32) callconv(.c) u32 {
+    const world = checked(world_ptr) orelse return invalid_state;
+    if (world.feature_flags & world_feature_ccd == 0) return unsupported;
+    if (enabled > 1) return invalid_argument;
+    const entered = enter(world);
+    if (entered != ok) return entered;
+    const index = world.value.bodyIndex(.{ .value = id }) orelse return leave(world, invalid_id);
+    @constCast(world.ccd_items.enabled)[index] = enabled == 1;
+    return leave(world, ok);
+}
+
+pub export fn gravity_v1_world_stats(world_ptr: ?*const World, out_stats: ?*WorldStats) callconv(.c) u32 {
+    const world = checkedConst(world_ptr) orelse return invalid_state;
+    if (rejectCallbackReentry(world)) return reentrant;
+    const output = out_stats orelse return invalid_argument;
+    if (!validStruct(output)) return bad_struct;
+    var body_count: u32 = 0;
+    var awake_count: u32 = 0;
+    for (world.value.storage.alive, 0..) |alive, index| if (alive) {
+        body_count += 1;
+        if (world.feature_flags & world_feature_sleep == 0 or world.sleep_workspace.storage.awake[index]) awake_count += 1;
+    };
+    var collider_count: u32 = 0;
+    for (world.value.colliders.?.alive) |alive| if (alive) {
+        collider_count += 1;
+    };
+    var joint_count: u32 = 0;
+    if (world.feature_flags & world_feature_joints != 0) for (world.joint_pool.storage.alive) |alive| if (alive) {
+        joint_count += 1;
+    };
+    output.* = .{
+        .struct_size = @sizeOf(WorldStats),
+        .reserved = 0,
+        .body_count = body_count,
+        .collider_count = collider_count,
+        .joint_count = joint_count,
+        .awake_body_count = awake_count,
+        .contact_count = @intCast(world.cache.len),
+        .broad_pair_count = @intCast(world.broadphase_buffers.pair_count),
+        .event_count = @intCast(world.event_count),
+        .worker_count = if (comptime abi_options.serial_wasm) 1 else if (world.dispatcher.dispatch_batch == null) 1 else 0,
+        .phase_visits = world.diagnostics.phase_count,
+    };
+    return ok;
 }
 
 pub export fn gravity_v1_world_body_states(world_ptr: ?*const World, output: [*c]BodyState, output_capacity: u32, out_required: ?*u32) callconv(.c) u32 {
@@ -1048,8 +1330,48 @@ pub export fn gravity_v1_world_query_shape(world_ptr: ?*World, query_ptr: ?*cons
     return leave(world, overlapQuery(world, f, m, .shape, undefined, undefined, shape, transform(query.transform), output, output_capacity, required));
 }
 
+pub export fn gravity_v1_world_query_shape_cast(world_ptr: ?*World, query_ptr: ?*const ShapeCastQuery, output: [*c]QueryHit, output_capacity: u32, out_required: ?*u32) callconv(.c) u32 {
+    const world = checked(world_ptr) orelse return invalid_state;
+    const query = query_ptr orelse return invalid_argument;
+    const required = out_required orelse return invalid_argument;
+    const entered = enter(world);
+    if (entered != ok) return entered;
+    if (!validStruct(query) or query.reserved1 != 0) return leave(world, bad_struct);
+    const m = mode(query.mode) orelse return leave(world, invalid_argument);
+    const f = filter(query.filter) orelse return leave(world, bad_struct);
+    const caster = shapeFrom(&query.shape) orelse return leave(world, bad_struct);
+    const count = collectItems(world);
+    var status = fp.MathStatus{};
+    var found: usize = 0;
+    for (world.query_items[0..count]) |item| {
+        if (!queries.passesFilter(f, item.collider)) continue;
+        const hit = queries.convexShapeCastSurface(caster, transform(query.start), vec(query.delta), item.collider.shape, item.transform, &world.assets.value, world.ccd_workspace.surface, &status) catch |err| return leave(world, mapError(err));
+        switch (hit.status) {
+            .miss => continue,
+            .non_convergent => return leave(world, invalid_argument),
+            .hit => {},
+        }
+        if (found == world.query_candidates.len) return leave(world, capacity);
+        world.query_candidates[found] = .{ .fraction = hit.fraction, .collider = item.id, .primitive = hit.feature, .feature = hit.feature, .point = hit.point, .normal = hit.normal };
+        found += 1;
+    }
+    const publication = queries.publish(m, world.query_candidates[0..found], world.query_output) catch |err| return leave(world, mapError(err));
+    return leave(world, writeHits(publication, output, output_capacity, required));
+}
+
 fn snapshotBytes(world: *World) ![]const u8 {
+    if (world.feature_flags & (world_feature_joints | world_feature_sleep | world_feature_ccd) != 0) {
+        return snapshot.encodeFullSnapshot(.{ .configuration = world.simulation, .asset_set = world.assets.value.asset_set_hash }, world.state, &world.value, &world.cache, &world.joint_pool, world.sleep_workspace.storage, world.ccd_items.enabled, world.snapshot_output, world.pipeline_payload, world.bodies_payload, world.colliders_payload, world.contacts_payload, world.joints_payload, world.sleep_payload, world.ccd_payload);
+    }
     return snapshot.encodePipelineBodiesContactsSnapshot(.{ .configuration = world.simulation, .asset_set = world.assets.value.asset_set_hash }, world.state, &world.value, &world.cache, world.snapshot_output, world.pipeline_payload, world.bodies_payload, world.colliders_payload, world.contacts_payload);
+}
+fn restoreSnapshot(world: *World, bytes: []const u8) !void {
+    if (world.feature_flags & (world_feature_joints | world_feature_sleep | world_feature_ccd) != 0) {
+        _ = try snapshot.decodeFullSnapshot(bytes, .{ .configuration = world.simulation, .asset_set = world.assets.value.asset_set_hash }, &world.state, &world.value, &world.stage, &world.cache, world.stage_contacts, world.contact_scratch, &world.joint_pool, &world.stage_joint_pool, world.sleep_workspace.storage, world.stage_sleep, @constCast(world.ccd_items.enabled), world.stage_ccd);
+        return;
+    }
+    const decoded = try snapshot.decodePipelineBodiesContactsSnapshotChecked(bytes, .{ .configuration = world.simulation, .asset_set = world.assets.value.asset_set_hash }, &world.value, &world.stage, &world.cache, world.stage_contacts, world.contact_scratch);
+    world.state = decoded.state;
 }
 pub export fn gravity_v1_world_snapshot_size(world_ptr: ?*World, out_size: ?*u64) callconv(.c) u32 {
     const world = checked(world_ptr) orelse return invalid_state;
@@ -1076,8 +1398,8 @@ pub export fn gravity_v1_world_snapshot_load(world_ptr: ?*World, input: [*c]cons
     const entered = enter(world);
     if (entered != ok) return entered;
     const bytes = bytesFrom(input, length) orelse return leave(world, invalid_argument);
-    const decoded = snapshot.decodePipelineBodiesContactsSnapshotChecked(bytes, .{ .configuration = world.simulation, .asset_set = world.assets.value.asset_set_hash }, &world.value, &world.stage, &world.cache, world.stage_contacts, world.contact_scratch) catch |err| return leave(world, mapError(err));
-    world.state = decoded.state;
+    restoreSnapshot(world, bytes) catch |err| return leave(world, mapError(err));
+    world.event_count = 0;
     return leave(world, ok);
 }
 

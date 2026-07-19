@@ -24,6 +24,12 @@ minor revisions may append fields; v1 readers accept a larger `struct_size` but
 never read beyond the v1 prefix. Math values, IDs, hashes, and fixed query values
 have frozen layouts and are not extensible descriptors.
 
+`GravityWorldDesc` retains its original 96-byte v1 prefix. Its appended
+capability tail opts a World into caller-buffered joint, sleep, CCD, and
+diagnostics state and supplies joint capacity; a 96-byte descriptor preserves
+the original behavior and reference hash. The extension is additive: existing
+function signatures and field offsets are unchanged.
+
 Every function returns a stable `GravityResult`. Recoverable failures never
 panic or unwind across the ABI. Buffer APIs always publish the required count;
 if the supplied capacity is too small, no partial output is published.
@@ -42,9 +48,15 @@ allocators, and worker identities never cross the C ABI.
 ## Snapshot and query semantics
 
 Snapshot load is a two-pass transaction bound to the world's protocol,
-configuration, and asset-set hash. Invalid input leaves the destination World
-unchanged. Ray, point, AABB, and convex-shape queries use the production query
-implementation and return canonical hit order. Asset-backed traversal scratch is
-part of caller-provided World memory.
+configuration, and asset-set hash. Extended Worlds include joint impulses,
+sleep state, and per-body CCD policy. Invalid input leaves the destination World
+unchanged. Ray, point, AABB, convex overlap, and convex shape-cast queries use
+the production query implementation and return canonical hit order.
+Asset-backed traversal scratch is part of caller-provided World memory.
+
+Joint creation supports Distance, Ball-Socket, Hinge, Slider, Fixed, and
+Cone-Twist constraints with optional limit, motor, spring, and cone/twist
+fields. `gravity_v1_world_stats` publishes derived counts and deterministic
+phase visits; it is diagnostic output and does not participate in state hashes.
 
 The machine-readable ABI baseline is `tests/abi/abi-baseline-v1.json`.

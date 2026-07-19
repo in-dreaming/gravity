@@ -312,6 +312,8 @@ test "production multi-range ABI pipeline hash matches serial across Spindle wor
         .substeps = 2,
         .tick_hz = 60,
         .assets = assets,
+        .feature_flags = 0,
+        .joint_capacity = 0,
     };
     var world_size: u64 = 0;
     var world_alignment: u32 = 0;

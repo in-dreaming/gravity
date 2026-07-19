@@ -27,10 +27,12 @@ extern "C" {
 /* Frozen layout constants consumed by the generated wasm32 TypeScript ABI. */
 #define GRAVITY_V1_WASM_SIZE_ASSET_BLOB 16u
 #define GRAVITY_V1_WASM_SIZE_ASSET_STORE_DESC 20u
-#define GRAVITY_V1_WASM_SIZE_WORLD_DESC 96u
+#define GRAVITY_V1_WASM_SIZE_WORLD_DESC 104u
 #define GRAVITY_V1_SIZE_BODY_DESC 128u
 #define GRAVITY_V1_SIZE_BODY_STATE 128u
 #define GRAVITY_V1_SIZE_COLLIDER_DESC 144u
+#define GRAVITY_V1_SIZE_JOINT_FRAME 72u
+#define GRAVITY_V1_SIZE_JOINT_DESC 296u
 #define GRAVITY_V1_SIZE_COMMAND 144u
 #define GRAVITY_V1_SIZE_EVENT 48u
 #define GRAVITY_V1_SIZE_QUERY_FILTER 16u
@@ -38,7 +40,9 @@ extern "C" {
 #define GRAVITY_V1_SIZE_POINT_QUERY 56u
 #define GRAVITY_V1_SIZE_AABB_QUERY 80u
 #define GRAVITY_V1_SIZE_SHAPE_QUERY 232u
+#define GRAVITY_V1_SIZE_SHAPE_CAST_QUERY 256u
 #define GRAVITY_V1_SIZE_QUERY_HIT 80u
+#define GRAVITY_V1_SIZE_WORLD_STATS 84u
 
 typedef int64_t GravityFpRaw;
 typedef uint64_t GravityId;
@@ -66,6 +70,20 @@ enum { GRAVITY_SHAPE_SPHERE = 0u, GRAVITY_SHAPE_BOX = 1u, GRAVITY_SHAPE_CAPSULE 
        GRAVITY_SHAPE_CONVEX_HULL = 3u, GRAVITY_SHAPE_COMPOUND = 4u,
        GRAVITY_SHAPE_TRIANGLE_MESH = 5u, GRAVITY_SHAPE_HEIGHT_FIELD = 6u };
 enum { GRAVITY_QUERY_ANY = 0u, GRAVITY_QUERY_CLOSEST = 1u, GRAVITY_QUERY_ALL = 2u };
+enum { GRAVITY_JOINT_DISTANCE = 0u, GRAVITY_JOINT_BALL_SOCKET = 1u,
+       GRAVITY_JOINT_HINGE = 2u, GRAVITY_JOINT_SLIDER = 3u,
+       GRAVITY_JOINT_FIXED = 4u, GRAVITY_JOINT_CONE_TWIST = 5u };
+enum { GRAVITY_WORLD_FEATURE_JOINTS = 1u << 0,
+       GRAVITY_WORLD_FEATURE_SLEEP = 1u << 1,
+       GRAVITY_WORLD_FEATURE_CCD = 1u << 2,
+       GRAVITY_WORLD_FEATURE_DIAGNOSTICS = 1u << 3 };
+enum { GRAVITY_JOINT_HAS_REFERENCE = 1u << 0,
+       GRAVITY_JOINT_HAS_SWING_REFERENCE = 1u << 1,
+       GRAVITY_JOINT_HAS_REFERENCE_ORIENTATION = 1u << 2,
+       GRAVITY_JOINT_ENABLE_LIMIT = 1u << 3,
+       GRAVITY_JOINT_ENABLE_MOTOR = 1u << 4,
+       GRAVITY_JOINT_ENABLE_SPRING = 1u << 5,
+       GRAVITY_JOINT_ENABLE_CONE_TWIST = 1u << 6 };
 enum { GRAVITY_COMMAND_FORCE = 0u, GRAVITY_COMMAND_TORQUE = 1u,
        GRAVITY_COMMAND_IMPULSE_AT_POINT = 2u, GRAVITY_COMMAND_VELOCITY = 3u,
        GRAVITY_COMMAND_KINEMATIC_TARGET = 4u, GRAVITY_COMMAND_DOF_LOCKS = 5u };
@@ -99,6 +117,8 @@ typedef struct GravityWorldDesc {
     GravityFpRaw linear_damping, angular_damping, max_linear_speed, max_angular_speed;
     uint32_t substeps, tick_hz;
     const GravityAssetStore *assets;
+    /* Appended v1 capability tail. A 96-byte struct retains legacy behavior. */
+    uint32_t feature_flags, joint_capacity;
 } GravityWorldDesc;
 
 typedef struct GravityBodyDesc {
@@ -126,6 +146,20 @@ typedef struct GravityColliderDesc {
     GravityFpRaw friction, restitution;
     uint32_t category, mask; int32_t group; uint32_t revision;
 } GravityColliderDesc;
+
+typedef struct GravityJointFrame { GravityVec3 anchor, axis, secondary; } GravityJointFrame;
+typedef struct GravityJointDesc {
+    uint32_t struct_size, reserved;
+    uint32_t kind, flags;
+    GravityId body_a, body_b;
+    GravityJointFrame frame_a, frame_b;
+    GravityFpRaw reference, swing_reference;
+    GravityQuat reference_orientation;
+    GravityFpRaw limit_min, limit_max;
+    GravityFpRaw motor_target_velocity, motor_max_force;
+    GravityFpRaw spring_frequency, spring_damping_ratio;
+    GravityFpRaw cone_swing_max, cone_twist_min, cone_twist_max;
+} GravityJointDesc;
 
 typedef struct GravityCommand {
     uint32_t struct_size, reserved;
@@ -161,10 +195,20 @@ typedef struct GravityShapeQuery {
     uint32_t struct_size, reserved; GravityColliderDesc shape; GravityTransform transform;
     GravityQueryFilter filter; uint32_t mode, reserved1;
 } GravityShapeQuery;
+typedef struct GravityShapeCastQuery {
+    uint32_t struct_size, reserved; GravityColliderDesc shape; GravityTransform start;
+    GravityVec3 delta; GravityQueryFilter filter; uint32_t mode, reserved1;
+} GravityShapeCastQuery;
 typedef struct GravityQueryHit {
     uint32_t struct_size, reserved; GravityId collider; GravityFpRaw fraction;
     GravityVec3 point, normal; uint32_t primitive, reserved1;
 } GravityQueryHit;
+typedef struct GravityWorldStats {
+    uint32_t struct_size, reserved;
+    uint32_t body_count, collider_count, joint_count, awake_body_count;
+    uint32_t contact_count, broad_pair_count, event_count, worker_count;
+    uint32_t phase_visits[11];
+} GravityWorldStats;
 
 typedef GravityResult (*GravityRunJobFn)(void *batch_context, uint32_t job_index);
 typedef GravityResult (*GravityDispatchBatchFn)(void *user, uint32_t job_count,
@@ -196,12 +240,17 @@ GRAVITY_API GravityResult gravity_v1_world_destroy_body(GravityWorld *world, Gra
 GRAVITY_API GravityResult gravity_v1_world_body_states(const GravityWorld *world, GravityBodyState *output, uint32_t capacity, uint32_t *out_required);
 GRAVITY_API GravityResult gravity_v1_world_create_collider(GravityWorld *world, const GravityColliderDesc *desc, GravityId *out_id);
 GRAVITY_API GravityResult gravity_v1_world_destroy_collider(GravityWorld *world, GravityId id);
+GRAVITY_API GravityResult gravity_v1_world_create_joint(GravityWorld *world, const GravityJointDesc *desc, GravityId *out_id);
+GRAVITY_API GravityResult gravity_v1_world_destroy_joint(GravityWorld *world, GravityId id);
+GRAVITY_API GravityResult gravity_v1_world_set_body_ccd(GravityWorld *world, GravityId id, uint32_t enabled);
+GRAVITY_API GravityResult gravity_v1_world_stats(const GravityWorld *world, GravityWorldStats *out_stats);
 GRAVITY_API GravityResult gravity_v1_world_events(const GravityWorld *world, GravityEvent *output, uint32_t capacity, uint32_t *out_required);
 
 GRAVITY_API GravityResult gravity_v1_world_query_ray(GravityWorld *world, const GravityRayQuery *query, GravityQueryHit *output, uint32_t capacity, uint32_t *out_required);
 GRAVITY_API GravityResult gravity_v1_world_query_point(GravityWorld *world, const GravityPointQuery *query, GravityQueryHit *output, uint32_t capacity, uint32_t *out_required);
 GRAVITY_API GravityResult gravity_v1_world_query_aabb(GravityWorld *world, const GravityAabbQuery *query, GravityQueryHit *output, uint32_t capacity, uint32_t *out_required);
 GRAVITY_API GravityResult gravity_v1_world_query_shape(GravityWorld *world, const GravityShapeQuery *query, GravityQueryHit *output, uint32_t capacity, uint32_t *out_required);
+GRAVITY_API GravityResult gravity_v1_world_query_shape_cast(GravityWorld *world, const GravityShapeCastQuery *query, GravityQueryHit *output, uint32_t capacity, uint32_t *out_required);
 
 GRAVITY_API GravityResult gravity_v1_world_snapshot_size(GravityWorld *world, uint64_t *out_size);
 GRAVITY_API GravityResult gravity_v1_world_snapshot_save(GravityWorld *world, uint8_t *output, uint64_t capacity, uint64_t *out_required);
@@ -218,6 +267,8 @@ static_assert(sizeof(GravityHash128) == 16, "GravityHash128 layout");
 static_assert(sizeof(GravityBodyDesc) == GRAVITY_V1_SIZE_BODY_DESC, "GravityBodyDesc layout");
 static_assert(sizeof(GravityBodyState) == GRAVITY_V1_SIZE_BODY_STATE, "GravityBodyState layout");
 static_assert(sizeof(GravityColliderDesc) == GRAVITY_V1_SIZE_COLLIDER_DESC, "GravityColliderDesc layout");
+static_assert(sizeof(GravityJointFrame) == GRAVITY_V1_SIZE_JOINT_FRAME, "GravityJointFrame layout");
+static_assert(sizeof(GravityJointDesc) == GRAVITY_V1_SIZE_JOINT_DESC, "GravityJointDesc layout");
 static_assert(sizeof(GravityCommand) == GRAVITY_V1_SIZE_COMMAND, "GravityCommand layout");
 static_assert(sizeof(GravityEvent) == GRAVITY_V1_SIZE_EVENT, "GravityEvent layout");
 static_assert(sizeof(GravityQueryFilter) == GRAVITY_V1_SIZE_QUERY_FILTER, "GravityQueryFilter layout");
@@ -225,7 +276,9 @@ static_assert(sizeof(GravityRayQuery) == GRAVITY_V1_SIZE_RAY_QUERY, "GravityRayQ
 static_assert(sizeof(GravityPointQuery) == GRAVITY_V1_SIZE_POINT_QUERY, "GravityPointQuery layout");
 static_assert(sizeof(GravityAabbQuery) == GRAVITY_V1_SIZE_AABB_QUERY, "GravityAabbQuery layout");
 static_assert(sizeof(GravityShapeQuery) == GRAVITY_V1_SIZE_SHAPE_QUERY, "GravityShapeQuery layout");
+static_assert(sizeof(GravityShapeCastQuery) == GRAVITY_V1_SIZE_SHAPE_CAST_QUERY, "GravityShapeCastQuery layout");
 static_assert(sizeof(GravityQueryHit) == GRAVITY_V1_SIZE_QUERY_HIT, "GravityQueryHit layout");
+static_assert(sizeof(GravityWorldStats) == GRAVITY_V1_SIZE_WORLD_STATS, "GravityWorldStats layout");
 #else
 _Static_assert(sizeof(GravityVec3) == 24, "GravityVec3 layout");
 _Static_assert(sizeof(GravityQuat) == 32, "GravityQuat layout");
@@ -233,6 +286,8 @@ _Static_assert(sizeof(GravityHash128) == 16, "GravityHash128 layout");
 _Static_assert(sizeof(GravityBodyDesc) == GRAVITY_V1_SIZE_BODY_DESC, "GravityBodyDesc layout");
 _Static_assert(sizeof(GravityBodyState) == GRAVITY_V1_SIZE_BODY_STATE, "GravityBodyState layout");
 _Static_assert(sizeof(GravityColliderDesc) == GRAVITY_V1_SIZE_COLLIDER_DESC, "GravityColliderDesc layout");
+_Static_assert(sizeof(GravityJointFrame) == GRAVITY_V1_SIZE_JOINT_FRAME, "GravityJointFrame layout");
+_Static_assert(sizeof(GravityJointDesc) == GRAVITY_V1_SIZE_JOINT_DESC, "GravityJointDesc layout");
 _Static_assert(sizeof(GravityCommand) == GRAVITY_V1_SIZE_COMMAND, "GravityCommand layout");
 _Static_assert(sizeof(GravityEvent) == GRAVITY_V1_SIZE_EVENT, "GravityEvent layout");
 _Static_assert(sizeof(GravityQueryFilter) == GRAVITY_V1_SIZE_QUERY_FILTER, "GravityQueryFilter layout");
@@ -240,7 +295,9 @@ _Static_assert(sizeof(GravityRayQuery) == GRAVITY_V1_SIZE_RAY_QUERY, "GravityRay
 _Static_assert(sizeof(GravityPointQuery) == GRAVITY_V1_SIZE_POINT_QUERY, "GravityPointQuery layout");
 _Static_assert(sizeof(GravityAabbQuery) == GRAVITY_V1_SIZE_AABB_QUERY, "GravityAabbQuery layout");
 _Static_assert(sizeof(GravityShapeQuery) == GRAVITY_V1_SIZE_SHAPE_QUERY, "GravityShapeQuery layout");
+_Static_assert(sizeof(GravityShapeCastQuery) == GRAVITY_V1_SIZE_SHAPE_CAST_QUERY, "GravityShapeCastQuery layout");
 _Static_assert(sizeof(GravityQueryHit) == GRAVITY_V1_SIZE_QUERY_HIT, "GravityQueryHit layout");
+_Static_assert(sizeof(GravityWorldStats) == GRAVITY_V1_SIZE_WORLD_STATS, "GravityWorldStats layout");
 #endif
 
 #endif

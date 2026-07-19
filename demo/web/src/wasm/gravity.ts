@@ -26,11 +26,16 @@ type WasmExports = {
   gravity_v1_world_body_states(world: number, output: number, capacity: number, required: number): number;
   gravity_v1_world_create_collider(world: number, desc: number, output: number): number;
   gravity_v1_world_destroy_collider(world: number, id: bigint): number;
+  gravity_v1_world_create_joint(world: number, desc: number, output: number): number;
+  gravity_v1_world_destroy_joint(world: number, id: bigint): number;
+  gravity_v1_world_set_body_ccd(world: number, id: bigint, enabled: number): number;
+  gravity_v1_world_stats(world: number, output: number): number;
   gravity_v1_world_events(world: number, output: number, capacity: number, required: number): number;
   gravity_v1_world_query_ray(world: number, query: number, output: number, capacity: number, required: number): number;
   gravity_v1_world_query_point(world: number, query: number, output: number, capacity: number, required: number): number;
   gravity_v1_world_query_aabb(world: number, query: number, output: number, capacity: number, required: number): number;
   gravity_v1_world_query_shape(world: number, query: number, output: number, capacity: number, required: number): number;
+  gravity_v1_world_query_shape_cast(world: number, query: number, output: number, capacity: number, required: number): number;
   gravity_v1_world_snapshot_size(world: number, output: number): number;
   gravity_v1_world_snapshot_save(world: number, output: number, capacity: bigint, required: number): number;
   gravity_v1_world_snapshot_load(world: number, input: number, length: bigint): number;
@@ -182,6 +187,26 @@ function writeCollider(view: DataView, at: number, value: ColliderInput): void {
   view.setUint32(at + 140, value.revision, true);
 }
 
+function writeJointFrame(view: DataView, at: number, value: JointFrameInput): void {
+  writeVec(view, at, value.anchor);
+  writeVec(view, at + 24, value.axis);
+  writeVec(view, at + 48, value.secondary);
+}
+
+function writeJoint(view: DataView, at: number, value: JointInput): void {
+  view.setUint32(at, ABI.layouts.jointDesc.size, true);
+  view.setUint32(at + 8, value.kind, true);
+  view.setUint32(at + 12, value.flags, true);
+  view.setBigUint64(at + ABI.layouts.jointDesc.bodyA, value.bodyA, true);
+  view.setBigUint64(at + ABI.layouts.jointDesc.bodyB, value.bodyB, true);
+  writeJointFrame(view, at + ABI.layouts.jointDesc.frameA, value.frameA);
+  writeJointFrame(view, at + ABI.layouts.jointDesc.frameB, value.frameB);
+  view.setBigInt64(at + ABI.layouts.jointDesc.reference, value.reference, true);
+  view.setBigInt64(at + 184, value.swingReference, true);
+  writeQuat(view, at + ABI.layouts.jointDesc.referenceOrientation, value.referenceOrientation);
+  for (const [offset, raw] of [[224, value.limitMin], [232, value.limitMax], [240, value.motorTargetVelocity], [248, value.motorMaxForce], [256, value.springFrequency], [264, value.springDampingRatio], [272, value.coneSwingMax], [280, value.coneTwistMin], [288, value.coneTwistMax]] as const) view.setBigInt64(at + offset, raw, true);
+}
+
 const resultNames = Object.fromEntries(Object.entries(ABI.results).map(([name, code]) => [code, name]));
 
 export class GravityAbiError extends Error {
@@ -202,6 +227,8 @@ export type WorldOptions = Readonly<{
   maxAngularSpeed: FpRaw;
   substeps: number;
   tickHz: number;
+  featureFlags: number;
+  jointCapacity: number;
 }>;
 
 export type BodyInput = Readonly<{
@@ -227,6 +254,28 @@ export type ColliderInput = Readonly<{
   revision: number;
 }>;
 
+export type JointFrameInput = Readonly<{ anchor: Vec3Raw; axis: Vec3Raw; secondary: Vec3Raw }>;
+export type JointInput = Readonly<{
+  kind: number;
+  flags: number;
+  bodyA: GravityId;
+  bodyB: GravityId;
+  frameA: JointFrameInput;
+  frameB: JointFrameInput;
+  reference: FpRaw;
+  swingReference: FpRaw;
+  referenceOrientation: QuatRaw;
+  limitMin: FpRaw;
+  limitMax: FpRaw;
+  motorTargetVelocity: FpRaw;
+  motorMaxForce: FpRaw;
+  springFrequency: FpRaw;
+  springDampingRatio: FpRaw;
+  coneSwingMax: FpRaw;
+  coneTwistMin: FpRaw;
+  coneTwistMax: FpRaw;
+}>;
+
 export type CommandInput = Readonly<{
   type: number;
   phasePriority: number;
@@ -242,6 +291,7 @@ export type CommandInput = Readonly<{
 export type BodyState = Readonly<{ id: GravityId; bodyType: number; dofLocks: number; transform: TransformRaw; linearVelocity: Vec3Raw; angularVelocity: Vec3Raw }>;
 export type GravityEvent = Readonly<{ type: number; colliderA: GravityId; colliderB: GravityId; featureA: bigint; featureB: bigint }>;
 export type QueryHit = Readonly<{ collider: GravityId; fraction: FpRaw; point: Vec3Raw; normal: Vec3Raw; primitive: number }>;
+export type WorldStats = Readonly<{ bodyCount: number; colliderCount: number; jointCount: number; awakeBodyCount: number; contactCount: number; broadPairCount: number; eventCount: number; workerCount: number; phaseVisits: readonly number[] }>;
 
 export class Gravity {
   readonly abiVersion: number;
@@ -378,6 +428,8 @@ export class World {
     view.setUint32(desc.ptr + 80, options.substeps, true);
     view.setUint32(desc.ptr + 84, options.tickHz, true);
     view.setUint32(desc.ptr + ABI.layouts.worldDesc.assets, store.pointer, true);
+    view.setUint32(desc.ptr + ABI.layouts.worldDesc.featureFlags, options.featureFlags, true);
+    view.setUint32(desc.ptr + ABI.layouts.worldDesc.jointCapacity, options.jointCapacity, true);
     try {
       gravity.check(gravity.exports.gravity_v1_world_memory_required(desc.ptr, sizeOut.ptr, alignOut.ptr), "world_memory_required");
       const size = checkedNumber(gravity.view().getBigUint64(sizeOut.ptr, true), "world size");
@@ -444,6 +496,45 @@ export class World {
   destroyCollider(id: GravityId): void {
     this.ensureLive();
     this.gravity.check(this.gravity.exports.gravity_v1_world_destroy_collider(this.pointer, id), "world_destroy_collider");
+  }
+
+  createJoint(input: JointInput): GravityId {
+    this.ensureLive();
+    const desc = this.gravity.allocate(ABI.layouts.jointDesc.size, 8);
+    const output = this.gravity.allocate(8, 8);
+    writeJoint(this.gravity.view(), desc.ptr, input);
+    try {
+      this.gravity.check(this.gravity.exports.gravity_v1_world_create_joint(this.pointer, desc.ptr, output.ptr), "world_create_joint");
+      return this.gravity.view().getBigUint64(output.ptr, true);
+    } finally {
+      this.gravity.release(output);
+      this.gravity.release(desc);
+    }
+  }
+
+  destroyJoint(id: GravityId): void {
+    this.ensureLive();
+    this.gravity.check(this.gravity.exports.gravity_v1_world_destroy_joint(this.pointer, id), "world_destroy_joint");
+  }
+
+  setBodyCcd(id: GravityId, enabled: boolean): void {
+    this.ensureLive();
+    this.gravity.check(this.gravity.exports.gravity_v1_world_set_body_ccd(this.pointer, id, enabled ? 1 : 0), "world_set_body_ccd");
+  }
+
+  stats(): WorldStats {
+    this.ensureLive();
+    const output = this.gravity.allocate(ABI.layouts.worldStats.size, 4);
+    const view = this.gravity.view();
+    view.setUint32(output.ptr, ABI.layouts.worldStats.size, true);
+    try {
+      this.gravity.check(this.gravity.exports.gravity_v1_world_stats(this.pointer, output.ptr), "world_stats");
+      return {
+        bodyCount: view.getUint32(output.ptr + 8, true), colliderCount: view.getUint32(output.ptr + 12, true), jointCount: view.getUint32(output.ptr + 16, true), awakeBodyCount: view.getUint32(output.ptr + 20, true),
+        contactCount: view.getUint32(output.ptr + 24, true), broadPairCount: view.getUint32(output.ptr + 28, true), eventCount: view.getUint32(output.ptr + 32, true), workerCount: view.getUint32(output.ptr + 36, true),
+        phaseVisits: Array.from({ length: 11 }, (_, index) => view.getUint32(output.ptr + ABI.layouts.worldStats.phaseVisits + index * 4, true))
+      };
+    } finally { this.gravity.release(output); }
   }
 
   step(commands: readonly CommandInput[]): void {
@@ -552,6 +643,11 @@ export class World {
   queryShape(shape: ColliderInput, transform: TransformRaw, filter: QueryFilter, mode: number): QueryHit[] {
     this.ensureLive();
     return this.query(ABI.layouts.shapeQuery.size, (view, at) => { writeCollider(view, at + ABI.layouts.shapeQuery.shape, shape); writeTransform(view, at + ABI.layouts.shapeQuery.transform, transform); writeFilter(view, at + ABI.layouts.shapeQuery.filter, filter); view.setUint32(at + 224, mode, true); }, this.gravity.exports.gravity_v1_world_query_shape.bind(this.gravity.exports), "query_shape");
+  }
+
+  queryShapeCast(shape: ColliderInput, start: TransformRaw, delta: Vec3Raw, filter: QueryFilter, mode: number): QueryHit[] {
+    this.ensureLive();
+    return this.query(ABI.layouts.shapeCastQuery.size, (view, at) => { writeCollider(view, at + ABI.layouts.shapeCastQuery.shape, shape); writeTransform(view, at + ABI.layouts.shapeCastQuery.start, start); writeVec(view, at + ABI.layouts.shapeCastQuery.delta, delta); writeFilter(view, at + ABI.layouts.shapeCastQuery.filter, filter); view.setUint32(at + 248, mode, true); }, this.gravity.exports.gravity_v1_world_query_shape_cast.bind(this.gravity.exports), "query_shape_cast");
   }
 
   dispose(): void {

@@ -15,7 +15,9 @@ const worldOptions: WorldOptions = {
   maxLinearSpeed: 0x7fff_ffff_ffff_ffffn,
   maxAngularSpeed: 0x7fff_ffff_ffff_ffffn,
   substeps: 2,
-  tickHz: 60
+  tickHz: 60,
+  featureFlags: 0,
+  jointCapacity: 0
 };
 
 function createBody(store: AssetStore): { world: ReturnType<AssetStore["createWorld"]>; body: bigint } {

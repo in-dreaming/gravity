@@ -80,6 +80,8 @@ fn runScene(allocator: std.mem.Allocator, label: []const u8, body_count: u32) !v
         .substeps = 2,
         .tick_hz = 60,
         .assets = assets,
+        .feature_flags = 0,
+        .joint_capacity = 0,
     };
     var world_size: u64 = 0;
     var world_alignment: u32 = 0;

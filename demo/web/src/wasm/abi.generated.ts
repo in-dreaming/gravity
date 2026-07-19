@@ -35,6 +35,29 @@ export const ABI = {
       "triangleMesh": 5,
       "heightField": 6
     },
+    "jointKind": {
+      "distance": 0,
+      "ballSocket": 1,
+      "hinge": 2,
+      "slider": 3,
+      "fixed": 4,
+      "coneTwist": 5
+    },
+    "worldFeature": {
+      "joints": 1,
+      "sleep": 2,
+      "ccd": 4,
+      "diagnostics": 8
+    },
+    "jointFlag": {
+      "reference": 1,
+      "swingReference": 2,
+      "referenceOrientation": 4,
+      "limit": 8,
+      "motor": 16,
+      "spring": 32,
+      "coneTwist": 64
+    },
     "queryMode": {
       "any": 0,
       "closest": 1,
@@ -61,9 +84,11 @@ export const ABI = {
       "assetCount": 12
     },
     "worldDesc": {
-      "size": 96,
+      "size": 104,
       "gravity": 24,
-      "assets": 88
+      "assets": 88,
+      "featureFlags": 92,
+      "jointCapacity": 96
     },
     "bodyDesc": {
       "size": 128,
@@ -82,6 +107,21 @@ export const ABI = {
       "body": 8,
       "local": 24,
       "dimensions": 80
+    },
+    "jointFrame": {
+      "size": 72,
+      "anchor": 0,
+      "axis": 24,
+      "secondary": 48
+    },
+    "jointDesc": {
+      "size": 296,
+      "bodyA": 16,
+      "bodyB": 24,
+      "frameA": 32,
+      "frameB": 104,
+      "reference": 176,
+      "referenceOrientation": 192
     },
     "command": {
       "size": 144,
@@ -121,12 +161,24 @@ export const ABI = {
       "transform": 152,
       "filter": 208
     },
+    "shapeCastQuery": {
+      "size": 256,
+      "shape": 8,
+      "start": 152,
+      "delta": 208,
+      "filter": 232
+    },
     "queryHit": {
       "size": 80,
       "collider": 8,
       "fraction": 16,
       "point": 24,
       "normal": 48
+    },
+    "worldStats": {
+      "size": 84,
+      "bodyCount": 8,
+      "phaseVisits": 40
     }
   }
 } as const;
@@ -151,11 +203,16 @@ export const REQUIRED_EXPORTS = [
   "gravity_v1_world_body_states",
   "gravity_v1_world_create_collider",
   "gravity_v1_world_destroy_collider",
+  "gravity_v1_world_create_joint",
+  "gravity_v1_world_destroy_joint",
+  "gravity_v1_world_set_body_ccd",
+  "gravity_v1_world_stats",
   "gravity_v1_world_events",
   "gravity_v1_world_query_ray",
   "gravity_v1_world_query_point",
   "gravity_v1_world_query_aabb",
   "gravity_v1_world_query_shape",
+  "gravity_v1_world_query_shape_cast",
   "gravity_v1_world_snapshot_size",
   "gravity_v1_world_snapshot_save",
   "gravity_v1_world_snapshot_load"

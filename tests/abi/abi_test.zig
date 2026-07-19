@@ -77,6 +77,8 @@ test "caller-memory ABI drives World query hash and snapshot transaction" {
         .substeps = 2,
         .tick_hz = 60,
         .assets = assets,
+        .feature_flags = 0,
+        .joint_capacity = 0,
     };
     var world_size: u64 = 0;
     var world_alignment: u32 = 0;
@@ -295,4 +297,154 @@ test "caller-memory ABI drives World query hash and snapshot transaction" {
         snapshot_memory[index] ^= @truncate((iteration % 255) + 1);
         try expectOk(abi.gravity_v1_world_snapshot_load(world, snapshot_memory.ptr, mutation_length));
     }
+}
+
+test "extended ABI drives joints CCD diagnostics shape casts and full snapshots" {
+    const allocator = std.testing.allocator;
+    var asset_desc = abi.AssetStoreDesc{ .struct_size = @sizeOf(abi.AssetStoreDesc), .reserved = 0, .assets = null, .asset_count = 0, .reserved1 = 0 };
+    var asset_size: u64 = 0;
+    var asset_alignment: u32 = 0;
+    try expectOk(abi.gravity_v1_asset_store_memory_required(&asset_desc, &asset_size, &asset_alignment));
+    const asset_memory = try allocator.alignedAlloc(u8, .fromByteUnits(@alignOf(abi.AssetStore)), @intCast(asset_size));
+    defer allocator.free(asset_memory);
+    var assets: *abi.AssetStore = undefined;
+    try expectOk(abi.gravity_v1_asset_store_init(asset_memory.ptr, asset_memory.len, &asset_desc, &assets));
+    defer expectOk(abi.gravity_v1_asset_store_deinit(assets)) catch unreachable;
+
+    var desc = abi.WorldDesc{
+        .struct_size = @sizeOf(abi.WorldDesc),
+        .reserved = 0,
+        .body_capacity = 4,
+        .collider_capacity = 4,
+        .command_capacity = 4,
+        .contact_capacity = 8,
+        .gravity = .{ .x = 0, .y = 0, .z = 0 },
+        .linear_damping = 0,
+        .angular_damping = 0,
+        .max_linear_speed = std.math.maxInt(i64),
+        .max_angular_speed = std.math.maxInt(i64),
+        .substeps = 2,
+        .tick_hz = 60,
+        .assets = assets,
+        .feature_flags = abi.world_feature_joints | abi.world_feature_sleep | abi.world_feature_ccd | abi.world_feature_diagnostics,
+        .joint_capacity = 4,
+    };
+    var world_size: u64 = 0;
+    var world_alignment: u32 = 0;
+    try expectOk(abi.gravity_v1_world_memory_required(&desc, &world_size, &world_alignment));
+    const world_memory = try allocator.alignedAlloc(u8, .fromByteUnits(@alignOf(abi.World)), @intCast(world_size));
+    defer allocator.free(world_memory);
+    var world: *abi.World = undefined;
+    try expectOk(abi.gravity_v1_world_init(world_memory.ptr, world_memory.len, &desc, &world));
+    defer expectOk(abi.gravity_v1_world_deinit(world)) catch unreachable;
+
+    var body_desc = abi.BodyDesc{
+        .struct_size = @sizeOf(abi.BodyDesc),
+        .reserved = 0,
+        .body_type = 1,
+        .dof_locks = 0,
+        .transform = defaultTransform(),
+        .inverse_mass = 1 << 32,
+        .inverse_inertia_xx = 1 << 32,
+        .inverse_inertia_yy = 1 << 32,
+        .inverse_inertia_zz = 1 << 32,
+        .inverse_inertia_xy = 0,
+        .inverse_inertia_xz = 0,
+        .inverse_inertia_yz = 0,
+    };
+    var dynamic_body: u64 = 0;
+    try expectOk(abi.gravity_v1_world_create_body(world, &body_desc, &dynamic_body));
+    body_desc.body_type = 0;
+    body_desc.inverse_mass = 0;
+    body_desc.inverse_inertia_xx = 0;
+    body_desc.inverse_inertia_yy = 0;
+    body_desc.inverse_inertia_zz = 0;
+    body_desc.transform.position.x = 3 << 32;
+    var static_body: u64 = 0;
+    try expectOk(abi.gravity_v1_world_create_body(world, &body_desc, &static_body));
+
+    const frame = abi.JointFrame{ .anchor = .{ .x = 0, .y = 0, .z = 0 }, .axis = .{ .x = 1 << 32, .y = 0, .z = 0 }, .secondary = .{ .x = 0, .y = 1 << 32, .z = 0 } };
+    var joint_desc = abi.JointDesc{
+        .struct_size = @sizeOf(abi.JointDesc),
+        .reserved = 0,
+        .kind = 0,
+        .flags = abi.joint_flag_reference,
+        .body_a = dynamic_body,
+        .body_b = static_body,
+        .frame_a = frame,
+        .frame_b = frame,
+        .reference = 3 << 32,
+        .swing_reference = 0,
+        .reference_orientation = defaultTransform().orientation,
+        .limit_min = 0,
+        .limit_max = 0,
+        .motor_target_velocity = 0,
+        .motor_max_force = 0,
+        .spring_frequency = 0,
+        .spring_damping_ratio = 0,
+        .cone_swing_max = 0,
+        .cone_twist_min = 0,
+        .cone_twist_max = 0,
+    };
+    var joint: u64 = 0;
+    try expectOk(abi.gravity_v1_world_create_joint(world, &joint_desc, &joint));
+    try std.testing.expect(joint != std.math.maxInt(u64));
+    try expectOk(abi.gravity_v1_world_set_body_ccd(world, dynamic_body, 1));
+
+    var collider_desc = abi.ColliderDesc{
+        .struct_size = @sizeOf(abi.ColliderDesc),
+        .reserved = 0,
+        .body = static_body,
+        .shape_kind = 0,
+        .flags = 0,
+        .local = defaultTransform(),
+        .dimensions = .{ .x = 1 << 32, .y = 0, .z = 0 },
+        .asset_source_id = 0,
+        .friction = 0,
+        .restitution = 0,
+        .category = 1,
+        .mask = std.math.maxInt(u32),
+        .group = 0,
+        .revision = 1,
+    };
+    var collider: u64 = 0;
+    try expectOk(abi.gravity_v1_world_create_collider(world, &collider_desc, &collider));
+    var cast = abi.ShapeCastQuery{
+        .struct_size = @sizeOf(abi.ShapeCastQuery),
+        .reserved = 0,
+        .shape = collider_desc,
+        .start = defaultTransform(),
+        .delta = .{ .x = 4 << 32, .y = 0, .z = 0 },
+        .filter = .{ .category = 1, .mask = std.math.maxInt(u32), .group = 0, .reserved = 0 },
+        .mode = 1,
+        .reserved1 = 0,
+    };
+    cast.shape.body = dynamic_body;
+    var hits: [1]abi.QueryHit = undefined;
+    var required: u32 = 0;
+    try expectOk(abi.gravity_v1_world_query_shape_cast(world, &cast, &hits, hits.len, &required));
+    try std.testing.expectEqual(@as(u32, 1), required);
+    try std.testing.expectEqual(collider, hits[0].collider);
+
+    var snapshot_size: u64 = 0;
+    try expectOk(abi.gravity_v1_world_snapshot_size(world, &snapshot_size));
+    const bytes = try allocator.alloc(u8, @intCast(snapshot_size));
+    defer allocator.free(bytes);
+    var snapshot_required: u64 = 0;
+    try expectOk(abi.gravity_v1_world_snapshot_save(world, bytes.ptr, bytes.len, &snapshot_required));
+    var initial_hash: abi.Hash128 = undefined;
+    try expectOk(abi.gravity_v1_world_hash(world, &initial_hash));
+    try expectOk(abi.gravity_v1_world_step(world, null, 0));
+    var stats = abi.WorldStats{ .struct_size = @sizeOf(abi.WorldStats), .reserved = 0, .body_count = 0, .collider_count = 0, .joint_count = 0, .awake_body_count = 0, .contact_count = 0, .broad_pair_count = 0, .event_count = 0, .worker_count = 0, .phase_visits = [_]u32{0} ** 11 };
+    try expectOk(abi.gravity_v1_world_stats(world, &stats));
+    try std.testing.expectEqual(@as(u32, 2), stats.body_count);
+    try std.testing.expectEqual(@as(u32, 1), stats.joint_count);
+    try std.testing.expect(stats.phase_visits[@intFromEnum(gravity.dynamics.pipeline.Phase.solve)] > 0);
+    try expectOk(abi.gravity_v1_world_snapshot_load(world, bytes.ptr, bytes.len));
+    var restored_hash: abi.Hash128 = undefined;
+    try expectOk(abi.gravity_v1_world_hash(world, &restored_hash));
+    try std.testing.expectEqualSlices(u8, &initial_hash.bytes, &restored_hash.bytes);
+    try expectOk(abi.gravity_v1_world_destroy_body(world, dynamic_body));
+    try expectOk(abi.gravity_v1_world_stats(world, &stats));
+    try std.testing.expectEqual(@as(u32, 0), stats.joint_count);
 }
