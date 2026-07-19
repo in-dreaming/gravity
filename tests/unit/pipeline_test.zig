@@ -909,7 +909,7 @@ test "pipeline sphere compound surface rebuilds child-path witnesses for the sol
     // deterministic pseudo-random, legal velocity command so every platform
     // exercises the command prevalidation and commit phases as well.
     const long_run = std.process.Environ.getAlloc(
-        .{ .block = .global },
+        std.testing.environ,
         std.testing.allocator,
         "GRAVITY_PIPELINE_LONG_RUN",
     ) catch null;
