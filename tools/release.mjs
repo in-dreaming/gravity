@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -64,6 +64,7 @@ async function normalizeStaticArchive(disk) {
     const members = archivedNames.map(name => name.split(/[\\/]/).at(-1));
     if (new Set(members).size !== members.length) throw new Error(`static archive has duplicate member basenames: ${disk}`);
     execFileSync("zig", ["ar", "x", input], { cwd: temporary, stdio: "pipe" });
+    await Promise.all(members.map(member => chmod(path.join(temporary, member), 0o644)));
     execFileSync("zig", ["ar", "rcsD", output, ...members], { cwd: temporary, stdio: "pipe" });
     return await readFile(output);
   } finally {
