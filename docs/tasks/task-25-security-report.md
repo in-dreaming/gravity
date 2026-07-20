@@ -26,6 +26,6 @@ Date: 2026-07-20
 | ABI and language consumers | 15/15 steps passed, including C11, C++17, C# and symbol checks |
 | clean-worktree `security-gate` | current pin requalification: 124/124 steps; 80/80 tests passed |
 | Linux ThreadSanitizer execution | 4/4 steps; 9/9 dispatcher tests passed with no race report |
-| executor-only dependency audit | Spindle `45aab8adf5f89500f6196b383265a5f9826312c2`, gitlink/checkout, MIT notice and SBOM verified |
+| executor-only dependency audit | Spindle `7548adbde0a30c4f87c745493ed405491e977a82`, gitlink/checkout, MIT notice and SBOM verified |
 
 The current-pin `security-gate` was recorded in an isolated clean worktree with the pinned Spindle submodule. Linux executes ThreadSanitizer from a native temporary Git checkout; Windows also cross-compiles the same target. The 72-minute coverage-guided parser evidence remains the frozen Task 25 campaign; the July 20 requalification replayed every bounded corpus in all three modes and did not substitute bounded replay for that campaign.

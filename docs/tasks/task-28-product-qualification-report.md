@@ -96,6 +96,21 @@ cleanliness check. Its .NET artifacts now live under `zig-out/dotnet-artifacts`;
 `abi-csharp-smoke` passed 5/5 steps and left the tracked worktree clean before
 the successful combined qualification.
 
+## ThreadSanitizer correction requalification
+
+Hosted Linux qualification exposed a Spindle task-lifecycle race after the
+724/724 functional tests passed: `Task.execute` and `Task.cancel` signalled
+`done` before reading the completion callback, allowing a waiter to reset the
+same task concurrently. Spindle `7548adbde0a30c4f87c745493ed405491e977a82`
+now completes the callback before publishing `done`, and includes a regression
+test that verifies `Task.wait` covers the callback lifetime.
+
+| Command | Result |
+|---|---|
+| Spindle `zig build test -j1 --summary all` | passed; 20/20 steps and 65/65 tests |
+| `zig build spindle-check-all-modes -j1 --summary all` | passed; 17/17 steps and 33/33 tests |
+| WSL `zig build jobs-tsan -j1 --cache-dir /tmp/gravity-tsan-cache --global-cache-dir /tmp/gravity-tsan-global --summary all` | passed; 5/5 steps and 9/9 tests with ThreadSanitizer |
+
 ## Platform evidence boundary
 
 | Target | Evidence | Status |
@@ -120,4 +135,3 @@ known incomplete. The Task 28 `product-ready` decision remains open until the
 checked-in workflow runs successfully on all six native jobs, the WASM job, the
 Demo job, and the two-clean-build release job. No product-ready tag or release
 may be created from this report alone.
-
