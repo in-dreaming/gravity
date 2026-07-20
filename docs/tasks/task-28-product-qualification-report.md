@@ -76,6 +76,26 @@ Medium scene and 1.232x for Stress on this host.
   consumer compiled using only the package's `include/gravity.h` and
   `lib/gravity_static.lib`, then ran successfully with exit code zero.
 
+## Current pin requalification
+
+The July 20 requalification used Spindle
+`45aab8adf5f89500f6196b383265a5f9826312c2` in an isolated clean worktree.
+
+| Command | Result |
+|---|---|
+| `zig build spindle-check-all-modes -j1 --summary all` | passed; 17/17 steps and 33/33 tests |
+| `zig build security-gate -j1 --summary all` | passed; 124/124 steps and 80/80 tests |
+| `zig build qualification-native -j1 --summary all` | passed in 1183.4 s; 376/376 steps and 724/724 tests |
+| `zig build performance-gate -j1 --summary all` | passed; 20/20 steps, all six 64-sample scene budgets true, zero Tick allocations |
+| `zig build release-check -j1 --summary all` | passed; 58/58 steps and all nine deterministic packages/checksums verified |
+| `zig build product-qualification -j1 --summary all` | passed in 1546.4 s; native, WASM, million-Tick WASM, ABI WASM, Demo, and reproducible release gates |
+
+Qualification exposed and fixed an ordering defect in the combined local gate:
+the C# ABI consumer formerly wrote tracked `bin/obj` outputs before the release
+cleanliness check. Its .NET artifacts now live under `zig-out/dotnet-artifacts`;
+`abi-csharp-smoke` passed 5/5 steps and left the tracked worktree clean before
+the successful combined qualification.
+
 ## Platform evidence boundary
 
 | Target | Evidence | Status |

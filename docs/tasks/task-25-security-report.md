@@ -1,6 +1,6 @@
 # Task 25 security qualification report
 
-Date: 2026-07-19
+Date: 2026-07-20
 
 ## Delivered surface
 
@@ -21,11 +21,11 @@ Date: 2026-07-19
 | Gate | Result |
 | --- | --- |
 | Linux Zig coverage-guided parser | 72 minutes; 102,942,390 runs; 5,684 unique runs; 1168/11329 edges (10.31%); no crash/OOM/timeout |
-| deterministic corpus, three modes | 56/56 build steps; 45/45 tests passed |
+| deterministic corpus, three modes | current pin requalification: 83/83 build steps; 45/45 tests passed |
 | parser minimizer | `asset-leading-decimal.json` reduced 59 to 56 bytes while preserving `InvalidDecimal` |
 | ABI and language consumers | 15/15 steps passed, including C11, C++17, C# and symbol checks |
-| clean-worktree `security-gate` | 89/89 steps; 79/79 tests passed |
+| clean-worktree `security-gate` | current pin requalification: 124/124 steps; 80/80 tests passed |
 | Linux ThreadSanitizer execution | 4/4 steps; 9/9 dispatcher tests passed with no race report |
-| executor-only dependency audit | Spindle `6756fb2feecfa354a7ae42bca3af5d9bd66c7558`, MIT and SBOM verified |
+| executor-only dependency audit | Spindle `45aab8adf5f89500f6196b383265a5f9826312c2`, gitlink/checkout, MIT notice and SBOM verified |
 
-The final `security-gate` was recorded in a clean worktree with the pinned Spindle submodule. Linux executed ThreadSanitizer from a native temporary Git checkout; Windows also cross-compiled the same target.
+The current-pin `security-gate` was recorded in an isolated clean worktree with the pinned Spindle submodule. Linux executes ThreadSanitizer from a native temporary Git checkout; Windows also cross-compiles the same target. The 72-minute coverage-guided parser evidence remains the frozen Task 25 campaign; the July 20 requalification replayed every bounded corpus in all three modes and did not substitute bounded replay for that campaign.
