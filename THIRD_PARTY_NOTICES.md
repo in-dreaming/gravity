@@ -4,7 +4,7 @@
 
 Gravity uses the executor-only public entry point from Spindle, pinned as the
 `third_party/spindle` git submodule at commit
-`67dcb5b7d07a032a6e629cc748f1ee280a1b538c`.
+`8d849c5d4d76b11b2e9cb2acf660e026d33844e6`.
 
 Spindle is Copyright (c) 2026 in dreaming and distributed under the MIT
 License. The complete license text is preserved in
