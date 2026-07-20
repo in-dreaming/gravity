@@ -29,13 +29,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: goto-bus-stop/setup-zig@v2
+      - if: matrix.name != 'windows-aarch64'
+        uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.16.0
           cache: false
+      - if: matrix.name == 'windows-aarch64'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'zig-x86_64-windows-0.16.0.zip'
+          Invoke-WebRequest 'https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip' -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne '68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e') {
+            throw "unexpected Zig archive SHA-256: $actual"
+          }
+          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP
+          (Join-Path $env:RUNNER_TEMP 'zig-x86_64-windows-0.16.0') | Out-File -FilePath $env:GITHUB_PATH -Append
       - if: runner.os == 'Linux'
         run: zig fmt --check build.zig build.zig.zon src tests tools
-      - run: zig build qualification-native -j1 --cache-dir "${{ runner.temp }}/gravity-zig-cache" --global-cache-dir "${{ runner.temp }}/gravity-zig-global-cache"
+      - if: matrix.name != 'windows-aarch64'
+        run: zig build qualification-native -j1 --cache-dir "${{ runner.temp }}/gravity-zig-cache" --global-cache-dir "${{ runner.temp }}/gravity-zig-global-cache"
+      - if: matrix.name == 'windows-aarch64'
+        run: zig build qualification-native -Dtarget=aarch64-windows -j1 --cache-dir "${{ runner.temp }}/gravity-zig-cache" --global-cache-dir "${{ runner.temp }}/gravity-zig-global-cache"
 
   wasm:
     runs-on: ubuntu-24.04
