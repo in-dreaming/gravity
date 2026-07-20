@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "FW2RJhQn0Rk=",
+  "dgSpecHash": "3l+1ETiRq5k=",
   "success": true,
-  "projectFilePath": "G:\\work\\tech\\infra\\gravity\\tests\\abi\\csharp\\GravityAbiSmoke.csproj",
+  "projectFilePath": "G:\\work\\tech\\infra\\gravity-task28-clean-check\\tests\\abi\\csharp\\GravityAbiSmoke.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\vyeli\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.28\\microsoft.netcore.app.ref.8.0.28.nupkg.sha512",
     "C:\\Users\\vyeli\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.28\\microsoft.windowsdesktop.app.ref.8.0.28.nupkg.sha512",

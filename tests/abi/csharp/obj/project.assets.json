@@ -14,11 +14,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "G:\\work\\tech\\infra\\gravity\\tests\\abi\\csharp\\GravityAbiSmoke.csproj",
+      "projectUniqueName": "G:\\work\\tech\\infra\\gravity-task28-clean-check\\tests\\abi\\csharp\\GravityAbiSmoke.csproj",
       "projectName": "GravityAbiSmoke",
-      "projectPath": "G:\\work\\tech\\infra\\gravity\\tests\\abi\\csharp\\GravityAbiSmoke.csproj",
+      "projectPath": "G:\\work\\tech\\infra\\gravity-task28-clean-check\\tests\\abi\\csharp\\GravityAbiSmoke.csproj",
       "packagesPath": "C:\\Users\\vyeli\\.nuget\\packages\\",
-      "outputPath": "G:\\work\\tech\\infra\\gravity\\tests\\abi\\csharp\\obj\\",
+      "outputPath": "G:\\work\\tech\\infra\\gravity-task28-clean-check\\tests\\abi\\csharp\\obj\\",
       "projectStyle": "PackageReference",
       "fallbackFolders": [
         "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
