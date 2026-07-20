@@ -2,8 +2,8 @@
 
 Date: 2026-07-20
 
-Status: local qualification complete; product-ready declaration pending the
-six-platform native hosted-runner matrix.
+Status: complete; the local gates and the six-platform hosted qualification
+matrix passed. Gravity 1.0.0 meets the Task 28 product-ready gate.
 
 ## Implemented
 
@@ -116,22 +116,38 @@ test that verifies `Task.wait` covers the callback lifetime.
 | Target | Evidence | Status |
 |---|---|---|
 | Windows x86-64 | native host `qualification-native`, Demo, ABI consumers, release consumer | passed |
-| Linux ARM64 | complete musl cross-build and QEMU execution of 22 binaries | passed as emulated ARM execution; native hosted runner pending |
+| Linux ARM64 | complete musl cross-build, QEMU execution of 22 binaries, and native hosted `qualification-native` | passed |
 | WASM/WASI | Wasmtime feature/long-run suite and Node freestanding ABI | passed |
-| Windows ARM64 | release cross-build and configured `windows-11-arm` job | native hosted runner pending |
-| Linux x86-64 | release cross-build and configured `ubuntu-24.04` job | native hosted runner pending |
-| macOS x86-64 | release cross-build and configured `macos-15-intel` job | native hosted runner pending |
-| macOS ARM64 | release cross-build and configured `macos-15` job | native hosted runner pending |
+| Windows ARM64 | native hosted execution of ARM64 qualification binaries built by the checksummed official x86-64 Zig 0.16.0 compiler under Windows emulation | passed |
+| Linux x86-64 | native hosted `qualification-native`, including ThreadSanitizer execution | passed |
+| macOS x86-64 | native hosted `qualification-native` | passed |
+| macOS ARM64 | native hosted `qualification-native` | passed |
 
 The hosted labels follow the current GitHub-hosted runner table:
 <https://docs.github.com/en/actions/reference/runners/github-hosted-runners>.
 Cross-compilation, QEMU execution, and workflow configuration are not recorded
 as substitutes for the required native hosted runs.
 
+## Hosted qualification
+
+GitHub Actions Product qualification
+[run #18](https://github.com/in-dreaming/gravity/actions/runs/29731400814)
+passed on commit `2ca7c6940cc65eea6de5d6d74f51584d5af42a20` in 50m13s.
+
+- All six native matrix jobs passed: Windows, Linux, and macOS on x86-64 and
+  ARM64. Windows ARM64 completed the full gate in 50m04s.
+- WASM passed in 5m07s; Demo passed in 2m07s; the two-clean-build
+  reproducible-release gate passed in 9m25s; the aggregate `complete` job
+  passed in 3s.
+- The release artifact was uploaded as `gravity-1.0.0-release` (7.34 MB) with
+  artifact digest
+  `sha256:e371e8b3637172cb361e62db54c42bb8f288ccb99517b8817067d8e1fa67d36c`.
+- The only annotations were GitHub's Node.js 20 action-runtime deprecation
+  warnings; no qualification job reported an error.
+
 ## Completion boundary
 
-No source, package, local runtime, documentation, or release-assembly item is
-known incomplete. The Task 28 `product-ready` decision remains open until the
-checked-in workflow runs successfully on all six native jobs, the WASM job, the
-Demo job, and the two-clean-build release job. No product-ready tag or release
-may be created from this report alone.
+No source, package, local runtime, documentation, release-assembly, or required
+platform item is known incomplete. Task 28 is complete and Gravity 1.0.0 is
+product-ready under the frozen scope in `docs/tasks/setup.md`. This report does
+not itself create or publish a product tag or release.
