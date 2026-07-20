@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("GravityAbiSmoke")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2f6525a16e6b8781b5f4b3a0b9a0cf5712ab73b2")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ee9ec97bfe973196c3b95f856da0db7ba6372cf8")]
 [assembly: System.Reflection.AssemblyProductAttribute("GravityAbiSmoke")]
 [assembly: System.Reflection.AssemblyTitleAttribute("GravityAbiSmoke")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
