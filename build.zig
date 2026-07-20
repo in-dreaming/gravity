@@ -152,7 +152,11 @@ pub fn build(b: *std.Build) void {
     const jobs_tsan = b.step("jobs-tsan", "Build, and on Linux run, the Task 23 dispatcher suite with ThreadSanitizer");
     const tsan_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu, .cpu_model = .baseline });
     const tsan_test = addJobsTsanTest(b, tsan_target, metadata);
-    if (builtin.os.tag == .linux) jobs_tsan.dependOn(&b.addRunArtifact(tsan_test).step) else jobs_tsan.dependOn(&tsan_test.step);
+    if (builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
+        jobs_tsan.dependOn(&b.addRunArtifact(tsan_test).step);
+    } else {
+        jobs_tsan.dependOn(&tsan_test.step);
+    }
     inline for ([_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe, .ReleaseFast }) |mode| {
         spindle_all_modes.dependOn(&addSpindleTest(b, b.fmt("spindle-integration-{s}", .{@tagName(mode)}), target, mode, addSpindleModule(b, target, mode)).step);
         spindle_all_modes.dependOn(&addJobsTest(b, b.fmt("jobs-dispatcher-{s}", .{@tagName(mode)}), target, mode, metadata, addSpindleModule(b, target, mode)).step);
