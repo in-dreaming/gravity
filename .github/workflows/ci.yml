@@ -33,8 +33,9 @@ jobs:
         with:
           version: 0.16.0
           cache: false
-      - run: zig fmt --check .
-      - run: zig build qualification-native -j1
+      - if: runner.os == 'Linux'
+        run: zig fmt --check build.zig build.zig.zon src tests tools
+      - run: zig build qualification-native -j1 --cache-dir .zig-cache-qualification --global-cache-dir .zig-global-cache-qualification
 
   wasm:
     runs-on: ubuntu-24.04
