@@ -284,7 +284,7 @@ pub fn build(b: *std.Build) void {
 
     if (target.result.os.tag == .windows) {
         const csharp_smoke = b.step("abi-csharp-smoke", "Run the C# P/Invoke consumer against the shared library");
-        const dotnet = b.addSystemCommand(&.{ "dotnet", "run", "--project", "tests/abi/csharp/GravityAbiSmoke.csproj", "--" });
+        const dotnet = b.addSystemCommand(&.{ "dotnet", "run", "--project", "tests/abi/csharp/GravityAbiSmoke.csproj", "--artifacts-path", "zig-out/dotnet-artifacts", "--" });
         dotnet.addArtifactArg(shared_library.?);
         csharp_smoke.dependOn(&dotnet.step);
         abi_test.dependOn(&dotnet.step);
