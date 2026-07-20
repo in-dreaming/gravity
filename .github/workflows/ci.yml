@@ -35,7 +35,7 @@ jobs:
           cache: false
       - if: runner.os == 'Linux'
         run: zig fmt --check build.zig build.zig.zon src tests tools
-      - run: zig build qualification-native -j1 --cache-dir .zig-cache-qualification --global-cache-dir .zig-global-cache-qualification
+      - run: zig build qualification-native -j1 --cache-dir "${{ runner.temp }}/gravity-zig-cache" --global-cache-dir "${{ runner.temp }}/gravity-zig-global-cache"
 
   wasm:
     runs-on: ubuntu-24.04
@@ -94,8 +94,8 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 11.7.0
-      - run: zig build release-check -j1 -p zig-out-a --cache-dir .zig-cache-a --global-cache-dir .zig-global-a
-      - run: zig build release-check -j1 -p zig-out-b --cache-dir .zig-cache-b --global-cache-dir .zig-global-b
+      - run: zig build release-check -j1 -p zig-out-a --cache-dir "${{ runner.temp }}/gravity-zig-cache-a" --global-cache-dir "${{ runner.temp }}/gravity-zig-global-a"
+      - run: zig build release-check -j1 -p zig-out-b --cache-dir "${{ runner.temp }}/gravity-zig-cache-b" --global-cache-dir "${{ runner.temp }}/gravity-zig-global-b"
       - run: node tools/release.mjs --compare zig-out-a/release zig-out-b/release
       - uses: actions/upload-artifact@v4
         with:
