@@ -1,13 +1,19 @@
 //! Task 25 build-graph, license and SBOM audit.
 const std = @import("std");
 
-const spindle_commit = "6756fb2feecfa354a7ae42bca3af5d9bd66c7558";
-
 fn read(init: std.process.Init, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .limited(16 * 1024 * 1024));
 }
 
 pub fn main(init: std.process.Init) !void {
+    var args = try init.minimal.args.iterateAllocator(init.gpa);
+    defer args.deinit();
+    _ = args.next();
+    const spindle_gitlink = args.next() orelse return error.InvalidArguments;
+    const spindle_checkout = args.next() orelse return error.InvalidArguments;
+    if (args.next() != null or spindle_gitlink.len != 40 or spindle_checkout.len != 40) return error.InvalidArguments;
+    if (!std.mem.eql(u8, spindle_gitlink, spindle_checkout)) return error.SpindleCheckoutDrift;
+
     const build = try read(init, "build.zig");
     defer init.gpa.free(build);
     if (std.mem.indexOf(u8, build, "third_party/spindle/src/root.zig") != null or std.mem.indexOf(u8, build, "spindle/src/zruntime/root.zig") != null) return error.ForbiddenSpindleAggregate;
@@ -37,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     defer init.gpa.free(sbom);
     const spindle_license = try read(init, "third_party/spindle/LICENSE");
     defer init.gpa.free(spindle_license);
-    if (std.mem.indexOf(u8, notice, spindle_commit) == null or std.mem.indexOf(u8, sbom, spindle_commit) == null) return error.SpindlePinDrift;
+    if (std.mem.indexOf(u8, notice, spindle_gitlink) == null or std.mem.indexOf(u8, sbom, spindle_gitlink) == null) return error.SpindlePinDrift;
     if (!std.mem.startsWith(u8, spindle_license, "MIT License")) return error.SpindleLicenseDrift;
-    std.debug.print("security audit: executor-only graph, Spindle pin {s}, MIT license and SBOM verified\n", .{spindle_commit});
+    std.debug.print("security audit: executor-only graph, gitlink/checkout Spindle pin {s}, MIT license and SBOM verified\n", .{spindle_gitlink});
 }

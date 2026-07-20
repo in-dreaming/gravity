@@ -265,6 +265,10 @@ pub fn build(b: *std.Build) void {
     security_gate.dependOn(jobs_tsan);
     const security_audit_step = b.step("security-audit", "Audit Task 25 build graph, licenses and SBOM pinning");
     const security_audit = addToolRun(b, "security_audit", target, .ReleaseSafe, metadata);
+    const spindle_gitlink = std.mem.trim(u8, b.run(&.{ "git", "rev-parse", "HEAD:third_party/spindle" }), " \t\r\n");
+    const spindle_checkout = std.mem.trim(u8, b.run(&.{ "git", "-C", "third_party/spindle", "rev-parse", "HEAD" }), " \t\r\n");
+    security_audit.addArg(spindle_gitlink);
+    security_audit.addArg(spindle_checkout);
     security_audit_step.dependOn(&security_audit.step);
     security_gate.dependOn(security_audit_step);
 
