@@ -29,10 +29,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: mlugg/setup-zig@v2
+      - uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.16.0
-          use-cache: false
+          cache: false
       - run: zig fmt --check .
       - run: zig build qualification-native -j1
 
@@ -43,10 +43,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: mlugg/setup-zig@v2
+      - uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.16.0
-          use-cache: false
+          cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22.22.2
@@ -62,10 +62,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: mlugg/setup-zig@v2
+      - uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.16.0
-          use-cache: false
+          cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22.22.2
@@ -83,10 +83,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: mlugg/setup-zig@v2
+      - uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.16.0
-          use-cache: false
+          cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22.22.2
