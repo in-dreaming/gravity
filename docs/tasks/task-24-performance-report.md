@@ -4,7 +4,7 @@
 
 The corpus is defined in `tools/task24_corpus.zig`; changing a scene or budget is a reviewed benchmark-protocol change. Every scene uses the product defaults for CCD, sleeping, two substeps, ten velocity iterations, and four position iterations. No pair, contact, joint, shape, or iteration is disabled for a result.
 
-The strict reference runner is an Intel Core i9-14900K (24 cores/32 logical processors), Windows 11 23H2 build 22631, Zig 0.16.0, ReleaseFast, all logical processors enabled, fixed high-performance power mode, no competing workload, 8 warmups, and 64 measured samples. Strict runs use `zig build performance-gate`. Shared CI uses `zig build performance-ci`: it validates the same schema and rejects a result only beyond a 2x noise band. Local numbers below are qualification evidence, not a replacement for the controlled runner.
+The strict reference runner is an Intel Core i9-14900K (24 cores/32 logical processors), Windows 11 23H2 build 22631, Zig 0.16.0, ReleaseFast, all logical processors enabled, fixed high-performance power mode, Windows High process priority, process affinity fixed to the reference machine's P-core logical processors 0-15, no competing workload, 8 warmups, and 64 measured samples. Fixed-runner mode sets its own Windows process priority and affinity before setup so worker threads inherit the controlled scheduling class and cannot migrate between heterogeneous P/E cores. Strict runs use `zig build performance-gate`. Shared CI uses `zig build performance-ci`: it validates the same schema at normal priority and unrestricted affinity, and rejects a result only beyond a 2x noise band. Local numbers below are qualification evidence, not a replacement for the controlled runner.
 
 ## Corpus and budgets
 
@@ -19,16 +19,16 @@ The strict reference runner is an Intel Core i9-14900K (24 cores/32 logical proc
 
 ## Local qualification
 
-The July 19 developer run used the reference CPU/OS but did not lock power, affinity, or background noise. Low sample counts on large scenes make P95/P99 diagnostic only; the checked-in JSONL preserves the exact observations.
+The July 20 strict run used the frozen reference CPU/OS, High priority, P-core affinity, high-performance power mode, no competing workload, 8 warmups, and 64 measured samples for every scene. `zig build performance-gate -j1 --summary all` completed 20/20 steps and every result below reported `budget_pass: true`. The checked-in JSONL preserves the exact observations.
 
 | Scene, 8 workers | P50 | P95 | P99 | Snapshot bytes / P95 | 8-tick rollback P95 | Workspace |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Small | 1.621 ms | 2.549 ms | 2.549 ms | 18,724 / 0.024 ms | 15.386 ms | 3.08 MB |
-| Medium | 58.978 ms | 64.324 ms | 64.324 ms | 1,166,216 / 0.769 ms | 476.285 ms | 124.74 MB |
-| Stress | 360.033 ms | 388.879 ms | 388.879 ms | 6,152,612 / 5.438 ms | 6.348 s | 568.74 MB |
-| MeshHeavy | 149.052 ms | 162.097 ms | 162.097 ms | 101,439 / 0.049 ms | 1.220 s | 29.75 MB |
-| JointHeavy | 408.475 ms | 424.414 ms | 424.414 ms | 3,738,020 / 1.740 ms | 5.522 s | 133.39 MB |
-| CCD | 2.202 s | 2.235 s | 2.235 s | 402,858 / 0.371 ms | 17.816 s | 59.79 MB |
+| Small | 0.895 ms | 0.950 ms | 1.122 ms | 18,724 / 0.008 ms | 7.888 ms | 3.08 MB |
+| Medium | 48.180 ms | 52.506 ms | 55.921 ms | 1,166,216 / 0.932 ms | 467.669 ms | 124.74 MB |
+| Stress | 232.073 ms | 256.462 ms | 293.430 ms | 6,152,612 / 4.734 ms | 2.398 s | 568.74 MB |
+| MeshHeavy | 132.522 ms | 142.016 ms | 145.923 ms | 101,439 / 0.045 ms | 1.182 s | 29.75 MB |
+| JointHeavy | 395.478 ms | 544.980 ms | 558.652 ms | 3,738,020 / 2.954 ms | 4.062 s | 133.40 MB |
+| CCD | 1.073 s | 1.384 s | 1.576 s | 402,858 / 0.245 ms | 12.430 s | 59.79 MB |
 
 All six runs reported zero Tick allocations and reproduced the serial canonical hash.
 

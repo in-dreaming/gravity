@@ -115,6 +115,28 @@ pub fn solveIslandIndexed(world: *body_world.World, members: []const ids.BodyId,
     while (iteration < settings.position_iterations) : (iteration += 1) for (contact_indices) |index| solveSplitContact(world, &contacts[index], pseudo, settings, status);
 }
 
+/// Equivalent island solve for partitions whose canonical indices form
+/// contiguous spans. The pipeline proves contiguity before selecting this
+/// path, removing two indexed gathers from every PGS iteration without
+/// changing row/contact order or ownership.
+pub fn solveIslandContiguous(world: *body_world.World, members: []const ids.BodyId, joint_rows: []constraints.ConstraintRow, contacts: []const Contact, pseudo: PseudoVelocities, settings: Settings, status: *fp.MathStatus) void {
+    for (members) |body| {
+        const index = world.bodyIndex(body).?;
+        pseudo.linear[index] = .zero;
+        pseudo.angular[index] = .zero;
+    }
+    joints.warmStartRowsContiguous(world, joint_rows, status);
+    for (contacts) |*contact| warmStart(world, contact, status);
+    for (contacts) |*contact| prepareRestitution(world, contact, settings, status);
+    var iteration: u8 = 0;
+    while (iteration < settings.velocity_iterations) : (iteration += 1) {
+        joints.solveRowsIterationContiguous(world, joint_rows, status);
+        for (contacts) |*contact| solveVelocityContact(world, contact, status);
+    }
+    iteration = 0;
+    while (iteration < settings.position_iterations) : (iteration += 1) for (contacts) |*contact| solveSplitContact(world, contact, pseudo, settings, status);
+}
+
 fn contactBelongsToIsland(world: *const body_world.World, contact: *const Contact, members: []const ids.BodyId) bool {
     const a = world.bodyIndex(contact.body_a).?;
     if (world.storage.body_type[a] == .dynamic) return containsBody(members, contact.body_a);

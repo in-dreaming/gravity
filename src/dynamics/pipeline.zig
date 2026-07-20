@@ -1312,6 +1312,61 @@ pub fn buildAnalyticSolverContacts(world: *const world_mod.World, assets: *const
     }
     return workspace.contacts[0..contact_count];
 }
+
+/// Parallel fast path for the common all-analytic cache. Each canonical patch
+/// owns exactly one contact/point slot, so workers write disjoint ranges and
+/// the synchronous status fold preserves logical-job order. Mixed, sensor,
+/// and multi-point caches retain the general serial bridge above.
+fn buildPureAnalyticSolverContacts(workspace: *Workspace, world: *const world_mod.World, cache: *contact_cache.Cache, solver: *AnalyticSolverWorkspace, status: *fp.MathStatus) Error!?[]const contact_solver.Contact {
+    // Below this threshold the extra submit/barrier costs more than the
+    // analytic work, especially across consecutive rollback ticks.
+    if (cache.len < 4096) return null;
+    if (solver.contacts.len < cache.len or solver.points.len < cache.len or solver.restitution_bias.len < cache.len) return error.CapacityExceeded;
+    for (cache.patches[0..cache.len]) |patch| {
+        if (patch.sensor or patch.len != 1) return null;
+        const a = try colliderFor(world, patch.key.collider_a);
+        const b = try colliderFor(world, patch.key.collider_b);
+        if (!isAnalyticShape(a.collider.shape) or !isAnalyticShape(b.collider.shape)) return null;
+    }
+    const Build = struct {
+        world: *const world_mod.World,
+        patches: []contact_cache.Patch,
+        solver: *AnalyticSolverWorkspace,
+
+        fn run(self: *@This(), range: jobs.Range, job_status: *fp.MathStatus) Error!void {
+            var index: usize = range.begin;
+            while (index < range.end) : (index += 1) {
+                const patch = &self.patches[index];
+                const a = try colliderFor(self.world, patch.key.collider_a);
+                const b = try colliderFor(self.world, patch.key.collider_b);
+                const a_body = self.world.bodyIndex(a.collider.body) orelse return error.InvalidBody;
+                const b_body = self.world.bodyIndex(b.collider.body) orelse return error.InvalidBody;
+                const a_transform = compose(.{ .position = self.world.storage.position[a_body], .orientation = self.world.storage.orientation[a_body] }, a.collider.local, job_status);
+                const b_transform = compose(.{ .position = self.world.storage.position[b_body], .orientation = self.world.storage.orientation[b_body] }, b.collider.local, job_status);
+                const a_shape = analyticShape(a.collider.shape, a_transform, job_status) orelse return error.InvalidContact;
+                const b_shape = analyticShape(b.collider.shape, b_transform, job_status) orelse return error.InvalidContact;
+                const velocity = self.world.storage.linear_velocity[b_body].sub(self.world.storage.linear_velocity[a_body], job_status);
+                const hit = analytic.collide(a_shape, b_shape, velocity, patch.key.collider_a, patch.key.collider_b, job_status) orelse return error.InvalidContact;
+                if (hit.separation.raw > 0) return error.InvalidContact;
+                const point = hit.witness_a.add(hit.witness_b, job_status).scale(fp.Fp.fromRatio(1, 2, job_status), job_status);
+                self.solver.points[index] = .{ .world_point = point, .penetration = hit.separation.neg(job_status) };
+                self.solver.restitution_bias[index] = .zero;
+                self.solver.contacts[index] = .{ .body_a = a.collider.body, .body_b = b.collider.body, .friction_a = a.collider.material.friction, .friction_b = b.collider.material.friction, .restitution_a = a.collider.material.restitution, .restitution_b = b.collider.material.restitution, .points = self.solver.points[index .. index + 1], .restitution_bias = self.solver.restitution_bias[index .. index + 1], .patch = patch };
+                try contact_solver.prepareContact(self.world, &self.solver.contacts[index], self.solver.points[index .. index + 1], job_status);
+            }
+        }
+    };
+    var build = Build{ .world = world, .patches = cache.patches[0..cache.len], .solver = solver };
+    try dispatchRangesGrain(workspace, cache.len, 1024, &build, status, Build.run);
+    return solver.contacts[0..cache.len];
+}
+
+fn isAnalyticShape(shape: shapes.Shape) bool {
+    return switch (shape) {
+        .sphere, .box, .capsule => true,
+        else => false,
+    };
+}
 fn isConvexSurfaceCaster(shape: shapes.Shape) bool {
     return switch (shape) {
         .sphere, .box, .capsule, .convex_hull => true,
@@ -1599,7 +1654,7 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
             joint_rows: []constraints.ConstraintRow = &.{},
             fn run(self: *@This()) Error!void {
                 if (self.workspace.observer) |observer| observer.detail(.solve_contacts);
-                self.solver_contacts = buildAnalyticSolverContacts(self.world, self.contacts.broadphase.assets, self.contacts.cache, self.pipeline_workspace.solver, self.status) catch |err| return switch (err) {
+                self.solver_contacts = (try buildPureAnalyticSolverContacts(self.workspace, self.world, self.contacts.cache, self.pipeline_workspace.solver, self.status) orelse buildAnalyticSolverContacts(self.world, self.contacts.broadphase.assets, self.contacts.cache, self.pipeline_workspace.solver, self.status)) catch |err| return switch (err) {
                     error.CapacityExceeded, error.OutOfScratch, error.OutOfSpace => error.CapacityExceeded,
                     else => error.ContactFailure,
                 };
@@ -1643,7 +1698,15 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
                                 const contact_end: usize = partition.contact_offsets[index + 1];
                                 const row_first: usize = partition.row_offsets[index];
                                 const row_end: usize = partition.row_offsets[index + 1];
-                                contact_solver.solveIslandIndexed(value.world, value.members[first .. first + count], value.joint_rows, partition.row_indices[row_first..row_end], value.contacts, partition.contact_indices[contact_first..contact_end], value.pseudo, value.settings, job_status);
+                                const contact_indices = partition.contact_indices[contact_first..contact_end];
+                                const row_indices = partition.row_indices[row_first..row_end];
+                                if (contiguousPartitionSlice(value.contacts, contact_indices)) |island_contacts| {
+                                    if (contiguousPartitionSlice(value.joint_rows, row_indices)) |island_rows| {
+                                        contact_solver.solveIslandContiguous(value.world, value.members[first .. first + count], island_rows, island_contacts, value.pseudo, value.settings, job_status);
+                                        continue;
+                                    }
+                                }
+                                contact_solver.solveIslandIndexed(value.world, value.members[first .. first + count], value.joint_rows, row_indices, value.contacts, contact_indices, value.pseudo, value.settings, job_status);
                             } else contact_solver.solveIslandWithJointRows(value.world, value.members[first .. first + count], value.joint_rows, value.contacts, value.pseudo, value.settings, job_status);
                         }
                     }
@@ -1761,6 +1824,14 @@ pub fn stepWithAnalyticSolver(world: *world_mod.World, state: *State, simulation
     try dispatchWork(workspace, &hash_phase, Hash.run);
     if (workspace.observer) |observer| observer.transition(null);
     return .{ .step = result, .events = events.events };
+}
+
+fn contiguousPartitionSlice(values: anytype, indices: []const u32) ?@TypeOf(values) {
+    if (indices.len == 0) return values[0..0];
+    const first: usize = indices[0];
+    if (first > values.len or indices.len > values.len - first) return null;
+    for (indices, 0..) |index, offset| if (index != first + offset) return null;
+    return values[first .. first + indices.len];
 }
 
 fn beginSleeping(world: *world_mod.World, state: *State, simulation: config.SimulationConfig, commands: []const world_mod.Command, workspace: *Workspace, pipeline_workspace: *AnalyticSolverPipelineWorkspace, sleep: *SleepWorkspace, status: *fp.MathStatus, required_trace: usize) Error!void {

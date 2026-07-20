@@ -22,8 +22,8 @@
     {
       "name": "Spindle",
       "SPDXID": "SPDXRef-Package-Spindle",
-      "versionInfo": "8d849c5d4d76b11b2e9cb2acf660e026d33844e6",
-      "downloadLocation": "git+https://github.com/in-dreaming/spindle.git@8d849c5d4d76b11b2e9cb2acf660e026d33844e6",
+      "versionInfo": "45aab8adf5f89500f6196b383265a5f9826312c2",
+      "downloadLocation": "git+https://github.com/in-dreaming/spindle.git@45aab8adf5f89500f6196b383265a5f9826312c2",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",
       "licenseDeclared": "MIT",

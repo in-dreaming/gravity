@@ -352,6 +352,22 @@ pub fn solveRowsIterationIndexed(world: *body_world.World, rows: []constraints.C
     }
 }
 
+/// Contiguous island variants selected only after the pipeline has validated
+/// the complete row stream and proved that the partition indices are a span.
+pub fn warmStartRowsContiguous(world: *body_world.World, rows: []const constraints.ConstraintRow, status: *fp.MathStatus) void {
+    for (rows) |row| applyRowImpulse(world, row, row.accumulated_impulse, status);
+}
+
+pub fn solveRowsIterationContiguous(world: *body_world.World, rows: []constraints.ConstraintRow, status: *fp.MathStatus) void {
+    for (rows) |*row| {
+        const velocity = rowVelocity(world, row.*, status);
+        const correction = velocity.add(row.bias, status).add(row.softness.mul(row.accumulated_impulse, status), status).neg(status).mul(row.effective_mass, status);
+        const old = row.accumulated_impulse;
+        row.accumulated_impulse = clamp(old.add(correction, status), row.lower, row.upper);
+        applyRowImpulse(world, row.*, row.accumulated_impulse.sub(old, status), status);
+    }
+}
+
 fn rowBelongsToIsland(world: *const body_world.World, row: constraints.ConstraintRow, members: []const ids.BodyId) bool {
     const a = world.bodyIndex(row.key.min_body) orelse return false;
     if (world.storage.body_type[a] == .dynamic) return containsBody(members, row.key.min_body);

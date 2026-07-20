@@ -5,6 +5,7 @@
 //! from pure Tick percentiles. Snapshot and 8-Tick rollback are timed
 //! separately. All storage is allocated before the allocator limit is frozen.
 const std = @import("std");
+const builtin = @import("builtin");
 const gravity = @import("gravity");
 const corpus = @import("task24_corpus.zig");
 const replay_tool = @import("replay.zig");
@@ -23,6 +24,11 @@ const replay = gravity.state.replay;
 const default_samples: usize = 64;
 const default_warmup: usize = 8;
 const mesh_source_id: u64 = 24_024;
+const windows_high_priority_class: std.os.windows.DWORD = 0x00000080;
+const reference_p_core_affinity: usize = 0x0000ffff;
+
+extern "kernel32" fn SetPriorityClass(process: std.os.windows.HANDLE, priority_class: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn SetProcessAffinityMask(process: std.os.windows.HANDLE, affinity_mask: usize) callconv(.winapi) std.os.windows.BOOL;
 
 const Enforcement = enum { none, fixed_runner, shared_ci };
 const Options = struct { scene: corpus.Scene, samples: usize = default_samples, warmup: usize = default_warmup, workers: usize = 0, enforcement: Enforcement = .none };
@@ -384,7 +390,13 @@ fn parseOptions(init: std.process.Init) !Options {
 
 pub fn main(init: std.process.Init) !void {
     try corpus.validate();
-    try measure(try parseOptions(init));
+    const options = try parseOptions(init);
+    if (options.enforcement == .fixed_runner and builtin.os.tag == .windows) {
+        const process = std.os.windows.GetCurrentProcess();
+        if (!SetPriorityClass(process, windows_high_priority_class).toBool()) return error.PriorityConfigurationFailed;
+        if (!SetProcessAffinityMask(process, reference_p_core_affinity).toBool()) return error.AffinityConfigurationFailed;
+    }
+    try measure(options);
 }
 
 test "Task 24 corpus remains valid in the benchmark compilation unit" {
