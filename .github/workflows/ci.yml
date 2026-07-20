@@ -33,7 +33,8 @@ jobs:
         with:
           version: 0.16.0
           cache: false
-      - run: zig fmt --check build.zig build.zig.zon src tests tools
+      - if: runner.os == 'Linux'
+        run: zig fmt --check build.zig build.zig.zon src tests tools
       - run: zig build qualification-native -j1
 
   wasm:
