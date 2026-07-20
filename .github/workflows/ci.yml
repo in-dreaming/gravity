@@ -110,12 +110,13 @@ jobs:
         with:
           version: 11.7.0
       - run: zig build release-check -j1 -p zig-out-a --cache-dir "${{ runner.temp }}/gravity-zig-cache-a" --global-cache-dir "${{ runner.temp }}/gravity-zig-global-a"
+      - run: mv zig-out-a "${RUNNER_TEMP}/gravity-prefix-a"
       - run: zig build release-check -j1 -p zig-out-b --cache-dir "${{ runner.temp }}/gravity-zig-cache-b" --global-cache-dir "${{ runner.temp }}/gravity-zig-global-b"
-      - run: node tools/release.mjs --compare zig-out-a/release zig-out-b/release
+      - run: node tools/release.mjs --compare "${RUNNER_TEMP}/gravity-prefix-a/release" zig-out-b/release
       - uses: actions/upload-artifact@v4
         with:
           name: gravity-1.0.0-release
-          path: zig-out-a/release
+          path: ${{ runner.temp }}/gravity-prefix-a/release
           if-no-files-found: error
 
   complete:
